@@ -64,7 +64,7 @@ jobs:
           aws-region: eu-central-1
           role-duration-seconds: 14400
 
-      - uses: alvarog2491/agentcore-ab-release-gate@v1
+      - uses: alvarog2491/agentcore-ab-release-gate@b45e590e6eb5369f3370412f82ee008468ec0b02 # v1
         with:
           image-uri: 123456789012.dkr.ecr.eu-central-1.amazonaws.com/agent:v2
           runtime-id: my_agent-abcdefghij
@@ -169,7 +169,7 @@ jobs:
           aws-region: eu-central-1
           role-duration-seconds: 14400
 
-      - uses: alvarog2491/agentcore-ab-release-gate@v1
+      - uses: alvarog2491/agentcore-ab-release-gate@b45e590e6eb5369f3370412f82ee008468ec0b02 # v1
         id: gate
         with:
           step: observe
@@ -194,7 +194,7 @@ jobs:
           aws-region: eu-central-1
           role-duration-seconds: 1800
 
-      - uses: alvarog2491/agentcore-ab-release-gate@v1
+      - uses: alvarog2491/agentcore-ab-release-gate@b45e590e6eb5369f3370412f82ee008468ec0b02 # v1
         with:
           step: promote
           state-artifact-name: ${{ needs.observe.outputs.state-artifact-name }}
@@ -215,7 +215,7 @@ jobs:
           aws-region: eu-central-1
           role-duration-seconds: 1800
 
-      - uses: alvarog2491/agentcore-ab-release-gate@v1
+      - uses: alvarog2491/agentcore-ab-release-gate@b45e590e6eb5369f3370412f82ee008468ec0b02 # v1
         with:
           step: rollback
           state-artifact-name: ${{ needs.observe.outputs.state-artifact-name }}
