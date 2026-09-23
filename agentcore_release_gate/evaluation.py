@@ -86,6 +86,28 @@ def _total_sample_size(results: JsonObject | None) -> int:
     return total
 
 
+def _partial_results(collected: VariantResults) -> JsonObject:
+    """Render each collected variant's key metrics for progress logging."""
+    return {
+        k: {
+            "mean": v["mean"],
+            "treatmentSamples": v["treatmentSampleSize"],
+            "controlSamples": v["controlSampleSize"],
+            "pValue": v["pValue"],
+        }
+        for k, v in collected.items()
+    }
+
+
+def _emit_final_results(ab_test_id: str, results: VariantResults) -> VariantResults:
+    """Log the terminal A/B-test results event and return the results unchanged."""
+    print(
+        json.dumps({"event": "ab-test-results", "abTestId": ab_test_id, "results": results}),
+        flush=True,
+    )
+    return results
+
+
 def wait_for_ab_test_results(
     client: _ABTestClient,
     ab_test_id: str,
@@ -150,17 +172,7 @@ def wait_for_ab_test_results(
             stable = time_since_change >= scoring_lag_seconds
             can_exit_early = stable and (not require_significance or all_significant)
             if can_exit_early:
-                print(
-                    json.dumps(
-                        {
-                            "event": "ab-test-results",
-                            "abTestId": ab_test_id,
-                            "results": latest_collected,
-                        }
-                    ),
-                    flush=True,
-                )
-                return latest_collected
+                return _emit_final_results(ab_test_id, latest_collected)
             print(
                 json.dumps(
                     {
@@ -174,15 +186,7 @@ def wait_for_ab_test_results(
                             0, int(scoring_lag_seconds - time_since_change)
                         ),
                         "awaitingSignificance": require_significance and not all_significant,
-                        "partialResults": {
-                            k: {
-                                "mean": v["mean"],
-                                "treatmentSamples": v["treatmentSampleSize"],
-                                "controlSamples": v["controlSampleSize"],
-                                "pValue": v["pValue"],
-                            }
-                            for k, v in collected.items()
-                        },
+                        "partialResults": _partial_results(collected),
                     }
                 ),
                 flush=True,
@@ -200,15 +204,7 @@ def wait_for_ab_test_results(
                         "totalSamplesScored": total_samples,
                         "evaluatorsReady": ready,
                         "evaluatorsWaiting": waiting,
-                        "partialResults": {
-                            k: {
-                                "mean": v["mean"],
-                                "treatmentSamples": v["treatmentSampleSize"],
-                                "controlSamples": v["controlSampleSize"],
-                                "pValue": v["pValue"],
-                            }
-                            for k, v in collected.items()
-                        },
+                        "partialResults": _partial_results(collected),
                     }
                 ),
                 flush=True,
@@ -222,13 +218,7 @@ def wait_for_ab_test_results(
         time.sleep(min(EVALUATION_POLL_INTERVAL_SECONDS, max(0, deadline - time.monotonic())))
 
     if latest_collected.keys() >= quality_gates.keys():
-        print(
-            json.dumps(
-                {"event": "ab-test-results", "abTestId": ab_test_id, "results": latest_collected}
-            ),
-            flush=True,
-        )
-        return latest_collected
+        return _emit_final_results(ab_test_id, latest_collected)
     raise TimeoutError("Timed out waiting for AgentCore A/B test results")
 
 
