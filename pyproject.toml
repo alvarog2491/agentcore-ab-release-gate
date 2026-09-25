@@ -54,6 +54,9 @@ pythonpath = ["src"]
 [tool.coverage.run]
 source = ["src/agentcore_release_gate", "main"]
 
+[tool.uv]
+required-version = "==0.12.19"
+
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
 tag_format = "v{version}"
@@ -63,9 +66,10 @@ add_partial_tags = true
 commit_message = "chore(release): {version}"
 # Keep uv.lock's copy of the project version in step with project.version; files the
 # build command stages land in the release commit. The PSR action container has no uv,
-# so install it first. Plain `uv lock` keeps every existing dependency pin.
+# so install it first, pinned to [tool.uv].required-version. Plain `uv lock` keeps every
+# existing dependency pin.
 build_command = """
-    python -m pip install --quiet uv==0.11.1
+    python -m pip install --quiet uv==0.12.19
     uv lock
     git add uv.lock
 """

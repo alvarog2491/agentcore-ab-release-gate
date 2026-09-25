@@ -71,6 +71,7 @@ runs:
       with:
         enable-cache: true
         cache-dependency-glob: ${{ github.action_path }}/uv.lock
+        version-file: ${{ github.action_path }}/pyproject.toml
 
     - name: Prepare action environment
       id: setup

@@ -86,3 +86,7 @@ Always choose the prefix that matches the actual change. When a PR contains mult
 ## Changing action inputs/outputs
 
 Any change to inputs or outputs in `action.yml` requires updating the README table and bumping the pinned version in the README via `scripts/bump_readme_pin.py`.
+
+## uv version
+
+`uv` is pinned once, in `pyproject.toml` `[tool.uv].required-version`. CI and the composite action's `setup-uv` step (via `version-file`) both read it, and `uv` refuses to run on a mismatch. The only other copy is the `pip install uv==…` in `[tool.semantic_release].build_command`; bump both together.
