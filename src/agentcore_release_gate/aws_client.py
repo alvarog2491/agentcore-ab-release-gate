@@ -1,6 +1,7 @@
 """AWS client for AgentCore Runtime, Gateway, Evaluations, A/B tests, and ECR."""
 
 import uuid
+from typing import Any, cast
 
 import boto3
 from botocore.config import Config
@@ -55,9 +56,15 @@ class AwsClient:
             retries={"mode": "standard", "total_max_attempts": AWS_MAX_ATTEMPTS},
         )
         session = boto3.Session(region_name=region)
-        self.agentcore_control = session.client("bedrock-agentcore-control", config=config)
-        self.agentcore = session.client("bedrock-agentcore", config=config)
-        self._ecr = session.client("ecr")
+        # Typed as Any: boto3-stubs' precise per-operation TypedDicts would force every
+        # call site in this module onto a rigid, request/response-specific shape, when
+        # the rest of the codebase deliberately treats AWS payloads as JsonObject (see
+        # schemas.py's docstring for why). boto3-stubs is still installed for editor
+        # and mypy completion on `session.client(...)` itself, and for the strongly
+        # typed AB-test result parsing in evaluation.py.
+        self.agentcore_control: Any = session.client("bedrock-agentcore-control", config=config)
+        self.agentcore: Any = session.client("bedrock-agentcore", config=config)
+        self._ecr: Any = session.client("ecr")
         self.region = region
         self.runtime_id = runtime_id
         self.gateway_id = gateway_id
@@ -73,8 +80,11 @@ class AwsClient:
         Returns:
             AgentCore endpoint response payload.
         """
-        return self.agentcore_control.get_agent_runtime_endpoint(
-            agentRuntimeId=self.runtime_id, endpointName=name
+        return cast(
+            JsonObject,
+            self.agentcore_control.get_agent_runtime_endpoint(
+                agentRuntimeId=self.runtime_id, endpointName=name
+            ),
         )
 
     def update_endpoint(self, name: str, version: str) -> None:
@@ -110,8 +120,11 @@ class AwsClient:
         Returns:
             AgentCore runtime response payload.
         """
-        return self.agentcore_control.get_agent_runtime(
-            agentRuntimeId=self.runtime_id, agentRuntimeVersion=version
+        return cast(
+            JsonObject,
+            self.agentcore_control.get_agent_runtime(
+                agentRuntimeId=self.runtime_id, agentRuntimeVersion=version
+            ),
         )
 
     def update_runtime(self, baseline_config: JsonObject, image: str) -> str:
@@ -133,7 +146,9 @@ class AwsClient:
             clientToken=str(uuid.uuid4()),
             agentRuntimeArtifact={"containerConfiguration": {"containerUri": image}},
         )
-        return self.agentcore_control.update_agent_runtime(**update)["agentRuntimeVersion"]
+        return cast(
+            str, self.agentcore_control.update_agent_runtime(**update)["agentRuntimeVersion"]
+        )
 
     # ── Gateway ───────────────────────────────────────────────────────────────
 
@@ -143,7 +158,9 @@ class AwsClient:
         Returns:
             AgentCore Gateway response payload.
         """
-        return self.agentcore_control.get_gateway(gatewayIdentifier=self.gateway_id)
+        return cast(
+            JsonObject, self.agentcore_control.get_gateway(gatewayIdentifier=self.gateway_id)
+        )
 
     def list_gateway_targets(self) -> dict[str, JsonObject]:
         """Return all Gateway targets keyed by their stable names.
@@ -168,8 +185,11 @@ class AwsClient:
         Returns:
             AgentCore Gateway target response payload.
         """
-        return self.agentcore_control.get_gateway_target(
-            gatewayIdentifier=self.gateway_id, targetId=target_id
+        return cast(
+            JsonObject,
+            self.agentcore_control.get_gateway_target(
+                gatewayIdentifier=self.gateway_id, targetId=target_id
+            ),
         )
 
     def create_gateway_target(self, name: str, target_config: JsonObject) -> JsonObject:
@@ -182,11 +202,14 @@ class AwsClient:
         Returns:
             Created Gateway target response payload.
         """
-        return self.agentcore_control.create_gateway_target(
-            gatewayIdentifier=self.gateway_id,
-            name=name,
-            targetConfiguration=target_config,
-            credentialProviderConfigurations=[{"credentialProviderType": "GATEWAY_IAM_ROLE"}],
+        return cast(
+            JsonObject,
+            self.agentcore_control.create_gateway_target(
+                gatewayIdentifier=self.gateway_id,
+                name=name,
+                targetConfiguration=target_config,
+                credentialProviderConfigurations=[{"credentialProviderType": "GATEWAY_IAM_ROLE"}],
+            ),
         )
 
     # ── Online evaluations ────────────────────────────────────────────────────
@@ -200,8 +223,9 @@ class AwsClient:
         Returns:
             AgentCore online-evaluation configuration response payload.
         """
-        return self.agentcore_control.get_online_evaluation_config(
-            onlineEvaluationConfigId=config_id
+        return cast(
+            JsonObject,
+            self.agentcore_control.get_online_evaluation_config(onlineEvaluationConfigId=config_id),
         )
 
     def create_evaluation_config_from(
@@ -290,7 +314,7 @@ class AwsClient:
             enableOnCreate=True,
             clientToken=str(uuid.uuid4()),
         )
-        return response["abTestId"]
+        return cast(str, response["abTestId"])
 
     def get_ab_test(self, ab_test_id: str) -> JsonObject:
         """Return the current state and results for an A/B test.
@@ -301,7 +325,7 @@ class AwsClient:
         Returns:
             AgentCore A/B test response payload.
         """
-        return self.agentcore.get_ab_test(abTestId=ab_test_id)
+        return cast(JsonObject, self.agentcore.get_ab_test(abTestId=ab_test_id))
 
     def stop_ab_test(self, ab_test_id: str) -> None:
         """Stop an A/B test, returning Gateway traffic to its control target.
@@ -335,4 +359,5 @@ class AwsClient:
             repositoryName=parsed["repository"],
             imageIds=[{"imageTag": parsed["tag"]}],
         )
-        return image.rsplit(":", 1)[0] + "@" + result["imageDetails"][0]["imageDigest"]
+        digest = cast(str, result["imageDetails"][0]["imageDigest"])
+        return image.rsplit(":", 1)[0] + "@" + digest

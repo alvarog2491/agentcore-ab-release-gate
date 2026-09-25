@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Only PR runs are cancelled by a newer push. On main, cancelling a run could kill the
+  # release job mid-publish (e.g. a tag pushed without its GitHub Release); the release
+  # job's own cancel-in-progress: false can't prevent a workflow-level cancellation.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint, format, and type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src main.py
+
+  test:
+    name: Test suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Run tests with coverage
+        run: |
+          uv run pytest \
+            --cov=src/agentcore_release_gate --cov=main \
+            --cov-report=term-missing --cov-report=xml \
+            --cov-fail-under=85
+
+  actionlint:
+    name: Lint GitHub workflow files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+
+  action-smoke-test:
+    name: Composite action smoke test
+    needs: [quality, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+      - name: Sync exactly as action.yml's composite steps do
+        run: uv sync --no-dev --frozen
+      # This isn't a real AWS deployment (no live runtime/gateway to test against in
+      # CI) -- it proves the action's actual entry point (main.py, run the same way
+      # action.yml invokes it) installs from the lockfile and enforces its input
+      # contract, without any of the dev/test tooling leaking into the shipped install.
+      - name: Confirm the action rejects an invalid quality-gates input
+        run: |
+          set +e
+          STATE_FILE=/tmp/state.json \
+          AWS_REGION=us-east-1 RUNTIME_ID=x GATEWAY_ID=y \
+          QUALITY_GATES='{}' EVALUATION_CONFIG_ID=x AB_TEST_ROLE_ARN=x \
+            uv run --no-dev --frozen main.py observe
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::Expected the action to reject an empty quality-gates input"
+            exit 1
+          fi
+          echo "Correctly rejected invalid input (exit $status)"
+      # `uv run --no-dev` alone doesn't prune an existing venv back down to a --no-dev
+      # set -- only an explicit `uv sync --no-dev` (already run above) does. This checks
+      # that already-synced environment directly, rather than relying on uv run's sync.
+      - name: Confirm dev-only tooling was not installed
+        run: |
+          if uv pip show pytest >/dev/null 2>&1; then
+            echo "::error::pytest leaked into the production install"
+            exit 1
+          fi
+          echo "Production install stays free of dev-only dependencies"
+
+  release:
+    name: Release
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    needs: [quality, test, actionlint, action-smoke-test]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.workflow }}-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      # Check out the branch (python-semantic-release needs one, not a detached HEAD),
+      # then pin it to the workflow's own sha in case main moved between this workflow
+      # starting and the release job running. Full history is required: a shallow clone
+      # of the current tip wouldn't contain github.sha once main has moved.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - run: git reset --hard ${{ github.sha }}
+
+      - name: Determine, tag, and publish the next release
+        uses: python-semantic-release/python-semantic-release@b700dbeb1f431a0fcc30a79f3f0869407fe07278 # v10.7.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          git_committer_name: "github-actions"
+          git_committer_email: "actions@users.noreply.github.com"

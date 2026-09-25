@@ -3,9 +3,12 @@
 import json
 import os
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from botocore.exceptions import BotoCoreError, ClientError
 
 from agentcore_release_gate.aws_client import AwsClient
 from agentcore_release_gate.constants import (
@@ -77,6 +80,7 @@ class Deployment:
         )
 
     def _log(self, event: str, **details: Any) -> None:
+        """Print one structured JSON log line for a deployment event."""
         print(json.dumps({"event": event, **details}), flush=True)
 
     def _checkpoint(self, **changes: Any) -> None:
@@ -330,7 +334,10 @@ class Deployment:
                 continue
             try:
                 self.aws.delete_evaluation_config(config_id)
-            except Exception as exc:
+            except (ClientError, BotoCoreError) as exc:
+                # Best-effort cleanup: an AWS-side failure here must not block promotion
+                # or rollback. A bug in our own code should still surface, so only AWS's
+                # own exception hierarchy is swallowed.
                 print(
                     f"Warning: could not delete ephemeral config {config_id}: {exc}",
                     flush=True,
@@ -435,7 +442,7 @@ class Deployment:
         print("Rolled back: control retains version " + self.state["baseline"], flush=True)
 
     @contextmanager
-    def _rollback_on_failure(self):
+    def _rollback_on_failure(self) -> Iterator[None]:
         """Roll back if the wrapped block raises, then re-raise the original failure."""
         try:
             yield

@@ -4,22 +4,27 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentcore-ab-release-gate"
-version = "0.1.0"
+version = "1.0.0"
 description = "GitHub Action that deploys an ARM64 ECR image to AgentCore Runtime, runs a native A/B test, and promotes or rolls back based on managed evaluation results."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "boto3==1.43.55",
     "botocore==1.43.55",
+    "pydantic==2.13.5",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest==9.0.3",
+    "pytest-cov==7.0.0",
+    "ruff==0.16.8",
+    "mypy==2.3.1",
+    "boto3-stubs[bedrock-agentcore,bedrock-agentcore-control,ecr]==1.43.55",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["agentcore_release_gate"]
+packages = ["src/agentcore_release_gate"]
 
 [tool.ruff]
 line-length = 100
@@ -31,3 +36,35 @@ select = ["E4", "E7", "E9", "F", "I"]
 [tool.ruff.lint.per-file-ignores]
 "tests/test_action.py" = ["E402"]
 "tests/test_report.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "src"
+strict = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["src/agentcore_release_gate", "main"]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+tag_format = "v{version}"
+# Also creates/moves the v{major} and v{major}.{minor} tags on every release, so the
+# README's `@v1` usage example keeps resolving to the latest v1.x.y release.
+add_partial_tags = true
+commit_message = "chore(release): {version}"
+
+# Matches the bump table in AGENTS.md exactly: feat -> minor, fix -> patch, "!" or a
+# BREAKING CHANGE footer -> major (handled by the parser regardless of type), and
+# everything else (including perf, which PSR's own default treats as a patch) -> none.
+[tool.semantic_release.commit_parser_options]
+minor_tags = ["feat"]
+patch_tags = ["fix"]

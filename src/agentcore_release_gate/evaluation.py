@@ -1,9 +1,10 @@
 """Read managed AgentCore A/B test results and enforce caller-defined quality gates."""
 
 import json
-import math
 import time
-from typing import Protocol, cast
+from typing import Protocol
+
+from pydantic import ValidationError
 
 from agentcore_release_gate.constants import (
     EVALUATION_POLL_INTERVAL_SECONDS,
@@ -11,6 +12,7 @@ from agentcore_release_gate.constants import (
     NO_SESSIONS_TIMEOUT_SECONDS,
     SCORING_LAG_SECONDS,
 )
+from agentcore_release_gate.schemas import EvaluatorMetric
 from agentcore_release_gate.types import JsonObject, QualityGates, VariantResult, VariantResults
 
 
@@ -48,31 +50,36 @@ def _collect_variant_results(
         scored treatment session are omitted.
 
     Raises:
-        ValueError: If AgentCore returns a non-finite or non-numeric mean score.
+        ValueError: If AgentCore returns a non-finite or non-numeric mean score, or a
+            missing one for a variant that already reports a sample size.
     """
     collected: VariantResults = {}
-    for metric in (results or {}).get("evaluatorMetrics", []):
-        evaluator_id = _resolve_evaluator_id(metric["evaluatorArn"])
+    for raw_metric in (results or {}).get("evaluatorMetrics", []):
+        evaluator_id = _resolve_evaluator_id(raw_metric["evaluatorArn"])
         if evaluator_id not in quality_gates:
             continue
+        # Only metrics for a requested evaluator are validated here: a malformed
+        # score on an evaluator we don't gate on must not abort the whole poll.
+        try:
+            metric = EvaluatorMetric.model_validate(raw_metric)
+        except ValidationError as error:
+            raise ValueError(
+                "AgentCore returned an invalid mean score for " + evaluator_id
+            ) from error
         # AgentCore fixes variant names to "C" (control) and "T1" (treatment).
-        treatment = next(
-            (variant for variant in metric["variantResults"] if variant["variantName"] == "T1"),
-            None,
-        )
-        if treatment is None or treatment.get("sampleSize", 0) < MINIMUM_RESULT_SAMPLE_SIZE:
+        treatment = next((v for v in metric.variantResults if v.variantName == "T1"), None)
+        if treatment is None or treatment.sampleSize < MINIMUM_RESULT_SAMPLE_SIZE:
             continue
-        mean = treatment["mean"]
-        if isinstance(mean, bool) or not isinstance(mean, (int, float)) or not math.isfinite(mean):
+        if treatment.mean is None:
             raise ValueError("AgentCore returned an invalid mean score for " + evaluator_id)
         collected[evaluator_id] = VariantResult(
-            mean=mean,
-            isSignificant=bool(treatment.get("isSignificant")),
-            absoluteChange=cast(float | None, treatment.get("absoluteChange")),
-            percentChange=cast(float | None, treatment.get("percentChange")),
-            pValue=cast(float | None, treatment.get("pValue")),
-            treatmentSampleSize=cast(int, treatment["sampleSize"]),
-            controlSampleSize=cast(int, metric["controlStats"]["sampleSize"]),
+            mean=treatment.mean,
+            isSignificant=treatment.isSignificant,
+            absoluteChange=treatment.absoluteChange,
+            percentChange=treatment.percentChange,
+            pValue=treatment.pValue,
+            treatmentSampleSize=treatment.sampleSize,
+            controlSampleSize=metric.controlStats.sampleSize,
         )
     return collected
 

@@ -76,7 +76,7 @@ jobs:
           github-token: ${{ github.token }}
 ```
 
-For a production workflow, pin the action to the full commit SHA of a reviewed release rather than a movable tag. The runner needs Linux, Python 3.13, access to download the action's Python dependencies, and AWS API access. Checking out the caller repository is not required.
+For a production workflow, pin the action to the full commit SHA of a reviewed release rather than a movable tag. The runner needs Linux, network access to install the action's Python dependencies, and AWS API access. Checking out the caller repository is not required. The action provisions its own isolated Python environment with [`astral-sh/setup-uv`](https://github.com/astral-sh/setup-uv) and `uv sync`, installed from the pinned `uv.lock` in this repository — no Python or `uv` setup step is needed in the calling workflow.
 
 ## Inputs
 

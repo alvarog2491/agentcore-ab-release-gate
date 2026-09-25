@@ -22,6 +22,10 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+coverage.xml
 
 # Linting
 .ruff_cache
+
+# MyPy
+.mypy_cache

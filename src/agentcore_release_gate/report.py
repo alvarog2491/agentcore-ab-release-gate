@@ -2,6 +2,7 @@
 
 import json
 import re
+from typing import cast
 from urllib.request import Request, urlopen
 
 from agentcore_release_gate.constants import (
@@ -106,7 +107,7 @@ def _github_request(
         },
     )
     with urlopen(request, timeout=GITHUB_REQUEST_TIMEOUT_SECONDS) as response:
-        return json.loads(response.read())
+        return cast(GitHubResponse, json.loads(response.read()))
 
 
 def publish_report(

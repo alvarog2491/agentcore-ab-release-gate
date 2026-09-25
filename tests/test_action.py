@@ -9,7 +9,9 @@ from types import SimpleNamespace
 
 import boto3
 import pytest
+from botocore.exceptions import ClientError
 from botocore.validate import validate_parameters
+from pydantic import ValidationError
 
 ACTION = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ACTION))
@@ -22,7 +24,8 @@ from agentcore_release_gate.evaluation import (
     wait_for_ab_test_results,
 )
 from agentcore_release_gate.report import COMMENT_MARKER
-from agentcore_release_gate.utils import _parse_image, parse_quality_gates, parse_weights, wait_for
+from agentcore_release_gate.schemas import ActionConfig
+from agentcore_release_gate.utils import _parse_image, wait_for
 
 
 @pytest.mark.parametrize(
@@ -75,41 +78,100 @@ def test_collect_variant_results_excludes_zero_sample_evaluator():
     assert _collect_variant_results(results, {"Builtin.Helpfulness": 0.7}) == {}
 
 
-def test_quality_gate_contract():
-    gates = {"Builtin.Helpfulness": 0.7, "custom-eval-abcdefghij": 3}
+def test_collect_variant_results_ignores_invalid_mean_on_unrelated_evaluator():
+    results = {
+        "evaluatorMetrics": [
+            {
+                "evaluatorArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:evaluator/Builtin.Helpfulness",
+                "controlStats": {"variantName": "C", "sampleSize": 10, "mean": 0.75},
+                "variantResults": [
+                    {
+                        "variantName": "T1",
+                        "sampleSize": 8,
+                        "mean": 0.8,
+                        "isSignificant": True,
+                        "absoluteChange": 0.05,
+                    }
+                ],
+            },
+            {
+                "evaluatorArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:evaluator/Builtin.Unrelated",
+                "controlStats": {"variantName": "C", "sampleSize": 5, "mean": 0.5},
+                "variantResults": [
+                    {"variantName": "T1", "sampleSize": 5, "mean": True, "isSignificant": True}
+                ],
+            },
+        ]
+    }
 
-    assert parse_quality_gates(json.dumps(gates)) == gates
+    collected = _collect_variant_results(results, {"Builtin.Helpfulness": 0.7})
+
+    assert collected["Builtin.Helpfulness"]["mean"] == 0.8
+    assert "Builtin.Unrelated" not in collected
+
+
+def _action_config(**overrides):
+    defaults = {
+        "quality_gates": {"Builtin.Helpfulness": 0.7},
+        "evaluation_config_id": "template_eval-abcdefghij",
+        "ab_test_role_arn": "arn:aws:iam::123456789012:role/ABTestRole",
+        "control_weight": 80,
+        "treatment_weight": 20,
+        "evaluation_timeout": 900,
+        "duration_seconds": 7200,
+        "scoring_lag_seconds": 120,
+    }
+    defaults.update(overrides)
+    return ActionConfig(**defaults)
+
+
+def test_action_config_accepts_a_valid_configuration():
+    config = _action_config(quality_gates={"Builtin.Helpfulness": 0.7, "custom-eval-abcdefghij": 3})
+
+    assert config.quality_gates == {"Builtin.Helpfulness": 0.7, "custom-eval-abcdefghij": 3}
+    assert (config.control_weight, config.treatment_weight) == (80, 20)
 
 
 @pytest.mark.parametrize(
-    "value",
+    "gates",
+    [{}, {"unknown": 1}, {"Builtin.Helpfulness": True}, {"Builtin.Helpfulness": float("nan")}],
+    ids=["empty", "unknown-evaluator", "boolean", "nan"],
+)
+def test_action_config_rejects_invalid_quality_gates(gates):
+    with pytest.raises(ValidationError, match="quality-gates"):
+        _action_config(quality_gates=gates)
+
+
+@pytest.mark.parametrize(
+    ("control_weight", "treatment_weight"),
+    [(0, 100), (100, 0), (50, 51)],
+    ids=["zero-control", "zero-treatment", "sum-over-100"],
+)
+def test_action_config_rejects_invalid_weights(control_weight, treatment_weight):
+    with pytest.raises(ValidationError, match="weight"):
+        _action_config(control_weight=control_weight, treatment_weight=treatment_weight)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
     [
-        "{}",
-        "[]",
-        '{"unknown": 1}',
-        '{"Builtin.Helpfulness": true}',
-        '{"Builtin.Helpfulness": NaN}',
-        "not-json",
+        ("evaluation_config_id", "  ", "evaluation-config-id"),
+        ("ab_test_role_arn", "  ", "ab-test-role-arn"),
+        ("evaluation_timeout", 0, "Evaluation timeout"),
+        ("duration_seconds", 30, "observation must last"),
+        ("scoring_lag_seconds", -1, "Scoring lag"),
     ],
-    ids=["empty", "list", "unknown-evaluator", "boolean", "nan", "invalid-json"],
+    ids=[
+        "blank-eval-config-id",
+        "blank-role-arn",
+        "non-positive-timeout",
+        "short-duration",
+        "negative-lag",
+    ],
 )
-def test_invalid_quality_gates_are_rejected(value):
-    with pytest.raises(ValueError, match="quality-gates"):
-        parse_quality_gates(value)
-
-
-def test_weight_contract():
-    assert parse_weights("80", "20") == (80, 20)
-
-
-@pytest.mark.parametrize(
-    ("control", "treatment"),
-    [("0", "100"), ("100", "0"), ("50", "51"), ("abc", "20")],
-    ids=["zero-control", "zero-treatment", "sum-over-100", "non-numeric"],
-)
-def test_invalid_weights_are_rejected(control, treatment):
-    with pytest.raises(ValueError, match="weight"):
-        parse_weights(control, treatment)
+def test_action_config_rejects_invalid_fields(field, value, match):
+    with pytest.raises(ValidationError, match=match):
+        _action_config(**{field: value})
 
 
 @pytest.mark.parametrize(
@@ -654,6 +716,13 @@ class TestDeployment:
             ({"SCORING_LAG_SECONDS": "-1"}, "Scoring lag"),
             ({"EVALUATION_CONFIG_ID": " "}, "evaluation-config-id"),
             ({"AB_TEST_ROLE_ARN": " "}, "ab-test-role-arn"),
+            ({"QUALITY_GATES": "not-json"}, "quality-gates"),
+            ({"QUALITY_GATES": "[]"}, "quality-gates"),
+            ({"QUALITY_GATES": "{}"}, "quality-gates"),
+            ({"CONTROL_WEIGHT": "abc"}, "control-weight"),
+            ({"TREATMENT_WEIGHT": "abc"}, "treatment-weight"),
+            ({"CONTROL_WEIGHT": "0", "TREATMENT_WEIGHT": "100"}, "weight"),
+            ({"CONTROL_WEIGHT": "50", "TREATMENT_WEIGHT": "51"}, "weight"),
         ],
         ids=[
             "non-positive-timeout",
@@ -661,6 +730,13 @@ class TestDeployment:
             "negative-scoring-lag",
             "blank-evaluation-config-id",
             "blank-ab-test-role-arn",
+            "malformed-quality-gates-json",
+            "quality-gates-not-an-object",
+            "quality-gates-empty-object",
+            "non-numeric-control-weight",
+            "non-numeric-treatment-weight",
+            "zero-control-weight",
+            "weights-sum-over-100",
         ],
     )
     def test_build_deployment_rejects_invalid_configuration(self, monkeypatch, overrides, match):
@@ -1028,10 +1104,14 @@ class TestDeployment:
 
         self.deployment.aws.delete_evaluation_config("eval-ephemeral-0")
 
-    def test_delete_ephemeral_configs_tolerates_unexpected_delete_failure(self):
+    def test_delete_ephemeral_configs_tolerates_unexpected_aws_delete_failure(self):
         self.deployment.observe_candidate(IMAGE, 60)
+        error = ClientError(
+            {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
+            "DeleteOnlineEvaluationConfig",
+        )
         self.deployment.aws.delete_evaluation_config = lambda _config_id: (_ for _ in ()).throw(
-            RuntimeError("AWS unavailable")
+            error
         )
 
         self.deployment.promote_candidate()
@@ -1039,6 +1119,15 @@ class TestDeployment:
         assert self.deployment.state["finished"] == "promoted"
         assert self.deployment.state.get("ephemeral_control_config_id") is None
         assert self.deployment.state.get("ephemeral_treatment_config_id") is None
+
+    def test_delete_ephemeral_configs_does_not_swallow_non_aws_bugs(self):
+        self.deployment.observe_candidate(IMAGE, 60)
+        self.deployment.aws.delete_evaluation_config = lambda _config_id: (_ for _ in ()).throw(
+            RuntimeError("programming error, not an AWS failure")
+        )
+
+        with pytest.raises(RuntimeError, match="programming error"):
+            self.deployment.promote_candidate()
 
     def test_reuses_existing_treatment_endpoint_and_matching_gateway_targets(self, monkeypatch):
         logs: list[str] = []
