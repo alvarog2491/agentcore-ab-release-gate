@@ -107,17 +107,17 @@ jobs:
     steps:
       # Check out the branch (python-semantic-release needs one, not a detached HEAD),
       # then pin it to the workflow's own sha in case main moved between this workflow
-      # starting and the release job running. Full history is required: a shallow clone
-      # of the current tip wouldn't contain github.sha once main has moved.
+      # starting and the release job running.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
       - run: git reset --hard ${{ github.sha }}
 
       - name: Determine, tag, and publish the next release
         uses: python-semantic-release/python-semantic-release@b700dbeb1f431a0fcc30a79f3f0869407fe07278 # v10.7.0
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.RELEASE_TOKEN }}
           git_committer_name: "github-actions"
           git_committer_email: "actions@users.noreply.github.com"
