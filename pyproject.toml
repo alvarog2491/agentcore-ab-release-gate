@@ -61,6 +61,14 @@ tag_format = "v{version}"
 # README's `@v1` usage example keeps resolving to the latest v1.x.y release.
 add_partial_tags = true
 commit_message = "chore(release): {version}"
+# Keep uv.lock's copy of the project version in step with project.version; files the
+# build command stages land in the release commit. The PSR action container has no uv,
+# so install it first. Plain `uv lock` keeps every existing dependency pin.
+build_command = """
+    python -m pip install --quiet uv==0.11.1
+    uv lock
+    git add uv.lock
+"""
 
 # Matches the bump table in AGENTS.md exactly: feat -> minor, fix -> patch, "!" or a
 # BREAKING CHANGE footer -> major (handled by the parser regardless of type), and
