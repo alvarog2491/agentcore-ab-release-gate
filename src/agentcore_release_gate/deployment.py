@@ -471,7 +471,10 @@ class Deployment:
         self._log("candidate-image-resolved", image=image, observationSeconds=seconds)
         with self._rollback_on_failure():
             config = self._prepare()
-            self._checkpoint(quality_gates=self.quality_gates)
+            self._checkpoint(
+                quality_gates=self.quality_gates,
+                require_significance=self.require_significance,
+            )
             self._deploy_candidate(config, image)
             self._start_ab_test()
             self._observe(seconds)

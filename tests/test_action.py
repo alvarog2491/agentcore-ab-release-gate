@@ -921,6 +921,23 @@ class TestDeployment:
         assert self.deployment.aws.agentcore_control.endpoints == {"control": "2", "treatment": "2"}
         assert self.deployment.aws.agentcore.tests[ab_test_id]["executionStatus"] == "STOPPED"
 
+    @pytest.mark.parametrize("require_significance", [True, False])
+    def test_observe_journals_require_significance_when_gates_pass(self, require_significance):
+        self.deployment.require_significance = require_significance
+        self.deployment.observe_candidate(IMAGE, 60)
+        state = json.loads(self.deployment.path.read_text())
+        assert state["require_significance"] is require_significance
+
+    @pytest.mark.parametrize("require_significance", [True, False])
+    def test_observe_journals_require_significance_when_gates_fail(self, require_significance):
+        self.deployment.require_significance = require_significance
+        self.deployment.quality_gates = {"Builtin.Helpfulness": 0.99}
+        with pytest.raises(ValueError, match="quality gates failed"):
+            self.deployment.observe_candidate(IMAGE, 60)
+        state = json.loads(self.deployment.path.read_text())
+        assert state["finished"] == "rolled_back"
+        assert state["require_significance"] is require_significance
+
     def test_observe_failure_rolls_back_without_promoting(self):
         self.deployment.quality_gates = {"Builtin.Helpfulness": 0.99}
         with pytest.raises(ValueError, match="quality gates failed"):

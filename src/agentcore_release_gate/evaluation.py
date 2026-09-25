@@ -2,7 +2,7 @@
 
 import json
 import time
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import ValidationError
 
@@ -229,6 +229,39 @@ def wait_for_ab_test_results(
     raise TimeoutError("Timed out waiting for AgentCore A/B test results")
 
 
+GateFailureReason = Literal["below_minimum", "not_significant", "regressed"]
+
+
+def gate_failure_reason(
+    variant: VariantResult,
+    minimum: float,
+    *,
+    require_significance: bool = True,
+) -> GateFailureReason | None:
+    """Decide whether one evaluator's treatment result fails its quality gate.
+
+    This is the single source of truth for a gate's outcome: both
+    ``enforce_quality_gates`` and the pull-request report use it, so the report
+    can never disagree with the decision that promoted or rolled back.
+
+    Args:
+        variant: Treatment metrics for one evaluator.
+        minimum: Minimum acceptable treatment mean.
+        require_significance: When True a non-significant result fails the gate.
+
+    Returns:
+        The first failed requirement, or None when the gate passes.
+    """
+    if variant["mean"] < minimum:
+        return "below_minimum"
+    if require_significance and not variant["isSignificant"]:
+        return "not_significant"
+    change = variant["absoluteChange"]
+    if change is not None and change < 0:
+        return "regressed"
+    return None
+
+
 def enforce_quality_gates(
     collected: VariantResults,
     quality_gates: QualityGates,
@@ -250,12 +283,7 @@ def enforce_quality_gates(
     failed: dict[str, VariantResult] = {}
     for name, minimum in quality_gates.items():
         variant = collected[name]
-        change = variant["absoluteChange"]
-        if (
-            variant["mean"] < minimum
-            or (require_significance and not variant["isSignificant"])
-            or (change is not None and change < 0)
-        ):
+        if gate_failure_reason(variant, minimum, require_significance=require_significance):
             failed[name] = variant
     if failed:
         raise ValueError("AgentCore A/B test quality gates failed: " + json.dumps(failed))
