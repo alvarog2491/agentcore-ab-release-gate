@@ -62,9 +62,7 @@ def build_report(state: JsonObject, outcome: str, run_url: str = "") -> str:
         for evaluator, minimum in sorted(gates.items()):
             variant = results.get(evaluator)
             if variant is None:
-                lines.append(
-                    f"| `{evaluator}` | — | {minimum:g} | — | — | — | — | ❌ Missing |"
-                )
+                lines.append(f"| `{evaluator}` | — | {minimum:g} | — | — | — | — | ❌ Missing |")
                 continue
             mean = variant["mean"]
             significant = variant["isSignificant"]
@@ -72,9 +70,7 @@ def build_report(state: JsonObject, outcome: str, run_url: str = "") -> str:
             p_value = variant["pValue"]
             samples = f"{variant['controlSampleSize']}/{variant['treatmentSampleSize']}"
             rendered_change = f"{change:g}" if isinstance(change, (int, float)) else "—"
-            rendered_p_value = (
-                f"{p_value:g}" if isinstance(p_value, (int, float)) else "—"
-            )
+            rendered_p_value = f"{p_value:g}" if isinstance(p_value, (int, float)) else "—"
             reason = gate_failure_reason(
                 variant, minimum, require_significance=require_significance
             )
@@ -150,9 +146,7 @@ def publish_report(
     if pull_request <= 0:
         raise ValueError("Pull request number must be positive")
 
-    comments_url = (
-        f"{api_url.rstrip('/')}/repos/{repository}/issues/{pull_request}/comments"
-    )
+    comments_url = f"{api_url.rstrip('/')}/repos/{repository}/issues/{pull_request}/comments"
     owned_comment = None
     page = 1
     while owned_comment is None:
