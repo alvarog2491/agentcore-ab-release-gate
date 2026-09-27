@@ -1,55 +1,16 @@
-"""Shared input validation, environment access, and AWS readiness helpers."""
+"""Poll AWS resources until they reach a requested state."""
 
-import os
-import re
 import time
 from collections.abc import Callable, Collection
-from typing import TypeVar, cast
+from typing import TypeVar
 
 from agentcore_release_gate.constants import (
-    AWS_ACCOUNT_ID_LENGTH,
     AWS_POLL_INTERVAL_SECONDS,
     DEFAULT_AWS_WAIT_TIMEOUT_SECONDS,
-    SHA256_HEX_LENGTH,
 )
-from agentcore_release_gate.exceptions import (
-    AwsResourceFailedError,
-    AwsWaitTimeoutError,
-    ConfigurationError,
-    InvalidImageUriError,
-)
-from agentcore_release_gate.types import EcrImageParts
+from agentcore_release_gate.exceptions import AwsResourceFailedError, AwsWaitTimeoutError
 
 ResultT = TypeVar("ResultT", bound=dict[str, object])
-ECR_IMAGE_PATTERN = re.compile(
-    rf"(?P<account>\d{{{AWS_ACCOUNT_ID_LENGTH}}})\.dkr\.ecr\."
-    r"(?P<region>[a-z0-9-]+)\.amazonaws\.com(?:\.cn)?/"
-    rf"(?P<repository>[a-z0-9][a-z0-9/_.-]*)(?::(?P<tag>[\w.-]+)|"
-    rf"@(?P<digest>sha256:[a-f0-9]{{{SHA256_HEX_LENGTH}}}))"
-)
-
-
-def require_env(name: str) -> str:
-    """Return a required environment variable, failing with a message that names it.
-
-    Raises:
-        ConfigurationError: If the variable is unset.
-    """
-    try:
-        return os.environ[name]
-    except KeyError:
-        raise ConfigurationError(f"Required environment variable {name} is not set") from None
-
-
-def _parse_image(image: str) -> EcrImageParts:
-    """Validate an ECR image URI and return its registry components."""
-    match = ECR_IMAGE_PATTERN.fullmatch(image)
-    if not match:
-        raise InvalidImageUriError(
-            "AgentCore requires an ECR image URI with a tag or digest. Mirror Docker Hub/GHCR "
-            "images to ECR before using this action; it does not publish images."
-        )
-    return cast(EcrImageParts, match.groupdict())
 
 
 def wait_for(

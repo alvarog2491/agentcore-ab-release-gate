@@ -20,6 +20,7 @@ from agentcore_release_gate.exceptions import (
 )
 from agentcore_release_gate.schemas import EvaluatorMetric
 from agentcore_release_gate.types import JsonObject, QualityGates, VariantResult, VariantResults
+from agentcore_release_gate.workflow_logging import log_event
 
 
 class _ABTestClient(Protocol):
@@ -114,15 +115,6 @@ def _partial_results(collected: VariantResults) -> JsonObject:
     }
 
 
-def _emit_final_results(ab_test_id: str, results: VariantResults) -> VariantResults:
-    """Log the terminal A/B-test results event and return the results unchanged."""
-    print(
-        json.dumps({"event": "ab-test-results", "abTestId": ab_test_id, "results": results}),
-        flush=True,
-    )
-    return results
-
-
 def wait_for_ab_test_results(
     client: _ABTestClient,
     ab_test_id: str,
@@ -187,42 +179,28 @@ def wait_for_ab_test_results(
             stable = time_since_change >= scoring_lag_seconds
             can_exit_early = stable and (not require_significance or all_significant)
             if can_exit_early:
-                return _emit_final_results(ab_test_id, latest_collected)
-            print(
-                json.dumps(
-                    {
-                        "event": "stabilizing-results",
-                        "abTestId": ab_test_id,
-                        "elapsedSeconds": elapsed,
-                        "remainingSeconds": remaining,
-                        "totalSamplesScored": total_samples,
-                        "stableForSeconds": int(time_since_change),
-                        "remainingScoringLagSeconds": max(
-                            0, int(scoring_lag_seconds - time_since_change)
-                        ),
-                        "awaitingSignificance": require_significance and not all_significant,
-                        "partialResults": _partial_results(collected),
-                    }
-                ),
-                flush=True,
+                break
+            log_event(
+                "stabilizing-results",
+                abTestId=ab_test_id,
+                elapsedSeconds=elapsed,
+                remainingSeconds=remaining,
+                totalSamplesScored=total_samples,
+                stableForSeconds=int(time_since_change),
+                remainingScoringLagSeconds=max(0, int(scoring_lag_seconds - time_since_change)),
+                awaitingSignificance=require_significance and not all_significant,
+                partialResults=_partial_results(collected),
             )
         else:
-            ready = list(collected.keys())
-            waiting = [k for k in quality_gates if k not in collected]
-            print(
-                json.dumps(
-                    {
-                        "event": "waiting-for-results",
-                        "abTestId": ab_test_id,
-                        "elapsedSeconds": elapsed,
-                        "remainingSeconds": remaining,
-                        "totalSamplesScored": total_samples,
-                        "evaluatorsReady": ready,
-                        "evaluatorsWaiting": waiting,
-                        "partialResults": _partial_results(collected),
-                    }
-                ),
-                flush=True,
+            log_event(
+                "waiting-for-results",
+                abTestId=ab_test_id,
+                elapsedSeconds=elapsed,
+                remainingSeconds=remaining,
+                totalSamplesScored=total_samples,
+                evaluatorsReady=list(collected),
+                evaluatorsWaiting=[k for k in quality_gates if k not in collected],
+                partialResults=_partial_results(collected),
             )
             if total_samples == 0 and now > no_sessions_deadline:
                 raise NoSessionsScoredError(
@@ -232,9 +210,10 @@ def wait_for_ab_test_results(
                 )
         time.sleep(min(EVALUATION_POLL_INTERVAL_SECONDS, max(0, deadline - time.monotonic())))
 
-    if latest_collected.keys() >= quality_gates.keys():
-        return _emit_final_results(ab_test_id, latest_collected)
-    raise EvaluationTimeoutError("Timed out waiting for AgentCore A/B test results")
+    if not latest_collected.keys() >= quality_gates.keys():
+        raise EvaluationTimeoutError("Timed out waiting for AgentCore A/B test results")
+    log_event("ab-test-results", abTestId=ab_test_id, results=latest_collected)
+    return latest_collected
 
 
 GateFailureReason = Literal["below_minimum", "not_significant", "regressed"]

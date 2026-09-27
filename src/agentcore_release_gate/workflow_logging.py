@@ -1,9 +1,16 @@
-"""Logging that emits GitHub Actions workflow commands (::error::, ::warning::) to stdout."""
+"""Stdout logging: structured JSON deployment events and GitHub Actions workflow commands."""
 
+import json
 import logging
 import sys
+from typing import Any
 
 LOGGER_NAME = "agentcore_release_gate"
+
+
+def log_event(event: str, **details: Any) -> None:
+    """Print one structured JSON log line for a deployment event."""
+    print(json.dumps({"event": event, **details}), flush=True)
 
 
 class _WorkflowCommandHandler(logging.Handler):

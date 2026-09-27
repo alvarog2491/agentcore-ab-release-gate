@@ -2,17 +2,6 @@
 
 from typing import Any, TypeAlias, TypedDict
 
-
-class EcrImageParts(TypedDict):
-    """Parsed components of a validated ECR image URI."""
-
-    account: str
-    region: str
-    repository: str
-    tag: str | None
-    digest: str | None
-
-
 JsonObject: TypeAlias = dict[str, Any]
 QualityGates: TypeAlias = dict[str, float]
 

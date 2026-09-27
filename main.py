@@ -8,14 +8,56 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from agentcore_release_gate.deployment import Deployment
+from agentcore_release_gate.aws_client import AwsClient
+from agentcore_release_gate.deployment import Deployment, load_state
 from agentcore_release_gate.exceptions import ConfigurationError, WorkflowCancelledError
 from agentcore_release_gate.report import build_report, publish_report
 from agentcore_release_gate.schemas import ActionConfig
-from agentcore_release_gate.utils import require_env
 from agentcore_release_gate.workflow_logging import get_workflow_logger
 
 logger = get_workflow_logger()
+
+
+def require_env(name: str) -> str:
+    """Return a required environment variable, failing with a message that names it.
+
+    Raises:
+        ConfigurationError: If the variable is unset.
+    """
+    try:
+        return os.environ[name]
+    except KeyError:
+        raise ConfigurationError(f"Required environment variable {name} is not set") from None
+
+
+def _write_step_outputs(outputs: dict[str, str]) -> None:
+    """Append step outputs to ``$GITHUB_OUTPUT`` when running inside GitHub Actions."""
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path:
+        return
+    with open(output_path, "a") as output:
+        output.writelines(f"{name}={value}\n" for name, value in outputs.items())
+
+
+def _write_variant_results(deployment: Deployment) -> None:
+    """Expose the evaluated A/B results as the ``variant-results`` step output."""
+    _write_step_outputs({"variant-results": json.dumps(deployment.state["variant_results"])})
+
+
+def _write_promoted_candidate(deployment: Deployment) -> None:
+    """Expose the promoted runtime version and image as step outputs."""
+    _write_step_outputs(
+        {"runtime-version": deployment.state["version"], "image-uri": deployment.state["image"]}
+    )
+
+
+def _aws_client() -> AwsClient:
+    """Build the AWS client for the runtime and Gateway named by the action inputs."""
+    return AwsClient(
+        region=require_env("AWS_REGION"),
+        runtime_id=require_env("RUNTIME_ID"),
+        gateway_id=require_env("GATEWAY_ID"),
+    )
 
 
 def _interrupted(_signal: int, _frame: object) -> None:
@@ -34,9 +76,7 @@ def cmd_report() -> None:
     if not pull_request:
         return
     state_path = os.environ.get("STATE_FILE", "")
-    state = {}
-    if state_path and Path(state_path).is_file():
-        state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+    state = load_state(Path(state_path)) if state_path else {}
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
     run_url = (
         f"{server}/{require_env('GITHUB_REPOSITORY')}/actions/runs/{require_env('GITHUB_RUN_ID')}"
@@ -60,7 +100,7 @@ def cmd_rollback(state_file: str) -> None:
     # Validation failures can reach cleanup without creating deployment state.
     if not Path(state_file).exists():
         return
-    Deployment(state_file).rollback()
+    Deployment(state_file, _aws_client()).rollback()
 
 
 def cmd_promote(state_file: str) -> None:
@@ -69,7 +109,9 @@ def cmd_promote(state_file: str) -> None:
     Args:
         state_file: Path to the deployment recovery journal.
     """
-    Deployment(state_file).promote_candidate()
+    deployment = Deployment(state_file, _aws_client())
+    deployment.promote_candidate()
+    _write_promoted_candidate(deployment)
 
 
 def _parse_int_env(name: str, default: str, label: str) -> int:
@@ -121,6 +163,7 @@ def _build_deployment(state_file: str) -> tuple[Deployment, int]:
     config = _load_action_config()
     deployment = Deployment(
         state_file,
+        _aws_client(),
         quality_gates=config.quality_gates,
         require_significance=config.require_significance,
         control_endpoint_name=config.control_endpoint_name,
@@ -142,6 +185,7 @@ def cmd_observe(state_file: str) -> None:
     """
     deployment, duration = _build_deployment(state_file)
     deployment.observe_candidate(require_env("IMAGE_URI"), duration)
+    _write_variant_results(deployment)
 
 
 def cmd_run(state_file: str) -> None:
@@ -152,6 +196,8 @@ def cmd_run(state_file: str) -> None:
     """
     deployment, duration = _build_deployment(state_file)
     deployment.run(require_env("IMAGE_URI"), duration)
+    _write_variant_results(deployment)
+    _write_promoted_candidate(deployment)
 
 
 def main() -> None:

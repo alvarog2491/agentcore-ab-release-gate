@@ -39,17 +39,17 @@ independently-maintained mock service.
 
 This is a composite GitHub Action that evaluates a new Amazon Bedrock AgentCore Runtime image against the currently live version using a native A/B test, then promotes or rolls back.
 
-**Entry point**: `main.py` dispatches to one of five subcommands (`run`, `observe`, `promote`, `rollback`, `report`) based on the `step` action input. The action.yml composite steps set environment variables and call `main.py` via `uv run`. Action inputs are parsed and validated once, through `ActionConfig` (see `schemas.py`), before a `Deployment` is constructed.
+**Entry point**: `main.py` dispatches to one of five subcommands (`run`, `observe`, `promote`, `rollback`, `report`) based on the `step` action input. The action.yml composite steps set environment variables and call `main.py` via `uv run`. Action inputs are parsed and validated once, through `ActionConfig` (see `schemas.py`), before a `Deployment` is constructed. `main.py` is the only module that reads environment variables (`require_env`) or writes GitHub Actions step outputs (`$GITHUB_OUTPUT`); it builds the `AwsClient` and passes it into `Deployment`, which stays free of CI concerns.
 
 **`src/agentcore_release_gate/` package**:
 - `deployment.py` — `Deployment` class orchestrates the full lifecycle: baseline capture, treatment endpoint setup, evaluation config cloning, A/B test creation, observation loop, result collection, and promotion/rollback. Every mutable state change is checkpointed to a JSON recovery journal (`state.json`) before the next AWS API call so failures are recoverable.
 - `evaluation.py` — polls `GetABTest` until all configured evaluators have scored results, enforces quality gates (minimum score + no regression + optional statistical significance). Parses each evaluator's metrics through the `schemas.EvaluatorMetric`/`VariantMetric` Pydantic models.
-- `aws_client.py` — thin wrapper over `boto3` for AgentCore Control, AgentCore (data-plane), and ECR API calls. Client attributes are typed `Any` deliberately (see the comment in `__init__`) so this module's `JsonObject`-based contract stays uniform; `boto3-stubs` is still installed for editor/mypy completion.
+- `aws_client.py` — thin wrapper over `boto3` for AgentCore Control, AgentCore (data-plane), and ECR API calls, plus ECR image URI parsing. Client attributes are typed `Any` deliberately (see the comment in `__init__`) so this module's `JsonObject`-based contract stays uniform; `boto3-stubs` is still installed for editor/mypy completion.
 - `report.py` — builds and publishes the optional pull-request comment.
 - `schemas.py` — Pydantic v2 models: `ActionConfig` validates the action's environment-variable inputs (weights, quality gates, timeouts); `EvaluatorMetric`/`VariantMetric`/`ControlStats` validate one evaluator's slice of a `GetABTest` response.
 - `exceptions.py` — every deliberate failure, rooted at `ReleaseGateError`. Each class also inherits the built-in it replaced (`ValueError`/`RuntimeError`/`TimeoutError`); raise one of these rather than a bare built-in. Pydantic validators in `schemas.py` are the exception: they must raise `ValueError`.
-- `utils.py` — `wait_for` poller, `require_env`, ECR image URI parsing.
-- `workflow_logging.py` — `get_workflow_logger()`: the `agentcore_release_gate` logger that `main.py` uses to emit GitHub Actions `::error::`/`::warning::` workflow commands to stdout.
+- `utils.py` — `wait_for`, the AWS resource readiness poller.
+- `workflow_logging.py` — all stdout logging: `log_event()` for structured JSON deployment events, and `get_workflow_logger()`: the `agentcore_release_gate` logger that `main.py` uses to emit GitHub Actions `::error::`/`::warning::` workflow commands to stdout.
 - `types.py` — `JsonObject`, `QualityGates`, `VariantResult` type aliases for the AWS payloads deliberately left untyped (see `schemas.py`'s module docstring for why).
 - `constants.py` — timeouts, poll intervals, weight defaults.
 

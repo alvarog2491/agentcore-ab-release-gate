@@ -25,7 +25,7 @@ from agentcore_release_gate.evaluation import (
 )
 from agentcore_release_gate.report import COMMENT_MARKER
 from agentcore_release_gate.schemas import ActionConfig
-from agentcore_release_gate.utils import _parse_image, wait_for
+from agentcore_release_gate.utils import wait_for
 
 
 @pytest.mark.parametrize(
@@ -219,14 +219,14 @@ def test_gate_still_rejects_regression_when_significance_not_required():
 )
 def test_non_ecr_registries_fail_with_actionable_message(image):
     with pytest.raises(ValueError, match="ECR"):
-        _parse_image(image)
+        ab_aws._parse_image(image)
 
 
 def test_ecr_tag_and_digest():
     base = "123456789012.dkr.ecr.us-east-1.amazonaws.com/team/agent"
 
-    assert _parse_image(base + ":v1")["tag"] == "v1"
-    assert _parse_image(base + "@sha256:" + "a" * 64)["digest"] == "sha256:" + "a" * 64
+    assert ab_aws._parse_image(base + ":v1")["tag"] == "v1"
+    assert ab_aws._parse_image(base + "@sha256:" + "a" * 64)["digest"] == "sha256:" + "a" * 64
 
 
 MODEL = boto3.Session()._session.get_service_model("bedrock-agentcore-control")
@@ -1200,23 +1200,55 @@ class TestDeployment:
         with pytest.raises(ValueError, match="at least 60 seconds"):
             self.deployment.run(IMAGE, 59)
 
-    def test_observe_candidate_writes_variant_results_to_github_output(self, monkeypatch, tmp_path):
-        output_path = tmp_path / "github_output.txt"
-        monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    def _run_cli(self, monkeypatch, command, **environment):
+        """Run one main.py subcommand against this test's fake AWS clients."""
+        clients = {
+            "bedrock-agentcore-control": self.deployment.aws.agentcore_control,
+            "bedrock-agentcore": self.deployment.aws.agentcore,
+        }
+        session = SimpleNamespace(
+            client=lambda service, **_kwargs: clients.get(service, SimpleNamespace())
+        )
+        environment = {
+            "STATE_FILE": str(self.deployment.path),
+            "AWS_REGION": "us-east-1",
+            "RUNTIME_ID": self.deployment.aws.runtime_id,
+            "GATEWAY_ID": self.deployment.aws.gateway_id,
+            **environment,
+        }
+        monkeypatch.setattr(os, "environ", environment)
+        monkeypatch.setattr(sys, "argv", ["main.py", command])
+        monkeypatch.setattr(ab_aws.boto3, "Session", lambda *_args, **_kwargs: session)
+        cli.main()
 
-        self.deployment.observe_candidate(IMAGE, 60)
+    def test_observe_subcommand_writes_variant_results_to_github_output(
+        self, monkeypatch, tmp_path
+    ):
+        output_path = tmp_path / "github_output.txt"
+
+        self._run_cli(
+            monkeypatch,
+            "observe",
+            GITHUB_OUTPUT=str(output_path),
+            IMAGE_URI=IMAGE,
+            DURATION_SECONDS="60",
+            QUALITY_GATES=json.dumps(self.deployment.quality_gates),
+            EVALUATION_CONFIG_ID=self.deployment.evaluation_config_template,
+            AB_TEST_ROLE_ARN=self.deployment.ab_test_role_arn,
+            EVALUATION_TIMEOUT_SECONDS="60",
+            SCORING_LAG_SECONDS="0",
+        )
 
         line = output_path.read_text().strip()
         assert line.startswith("variant-results=")
         payload = json.loads(line.removeprefix("variant-results="))
         assert payload["Builtin.Helpfulness"]["mean"] == 0.8
 
-    def test_promote_candidate_writes_runtime_outputs(self, monkeypatch, tmp_path):
+    def test_promote_subcommand_writes_runtime_outputs(self, monkeypatch, tmp_path):
         output_path = tmp_path / "github_output.txt"
         self.deployment.observe_candidate(IMAGE, 60)
-        monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
 
-        self.deployment.promote_candidate()
+        self._run_cli(monkeypatch, "promote", GITHUB_OUTPUT=str(output_path))
 
         content = output_path.read_text()
         assert "runtime-version=2" in content

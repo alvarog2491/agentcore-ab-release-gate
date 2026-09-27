@@ -9,9 +9,10 @@ ACTION = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ACTION))
 import main as cli
 from agentcore_release_gate import exceptions as errors
-from agentcore_release_gate.deployment import _load_state
+from agentcore_release_gate.aws_client import _parse_image
+from agentcore_release_gate.deployment import load_state
 from agentcore_release_gate.evaluation import enforce_quality_gates
-from agentcore_release_gate.utils import _parse_image, require_env, wait_for
+from agentcore_release_gate.utils import wait_for
 
 
 @pytest.mark.parametrize(
@@ -49,16 +50,16 @@ def test_workflow_cancellation_bypasses_ordinary_exception_handlers():
 def test_require_env_names_the_missing_variable(monkeypatch):
     monkeypatch.delenv("IMAGE_URI", raising=False)
     with pytest.raises(errors.ConfigurationError, match="IMAGE_URI is not set"):
-        require_env("IMAGE_URI")
+        cli.require_env("IMAGE_URI")
 
 
 def test_require_env_returns_the_value(monkeypatch):
     monkeypatch.setenv("IMAGE_URI", "image")
-    assert require_env("IMAGE_URI") == "image"
+    assert cli.require_env("IMAGE_URI") == "image"
 
 
 def test_missing_state_journal_starts_empty(tmp_path):
-    assert _load_state(tmp_path / "state.json") == {}
+    assert load_state(tmp_path / "state.json") == {}
 
 
 @pytest.mark.parametrize(
@@ -70,7 +71,7 @@ def test_unreadable_state_journal_is_reported(tmp_path, content, message):
     path = tmp_path / "state.json"
     path.write_text(content)
     with pytest.raises(errors.StateJournalError, match=message):
-        _load_state(path)
+        load_state(path)
 
 
 def test_invalid_image_uri_is_a_configuration_error():
