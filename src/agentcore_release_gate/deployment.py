@@ -20,8 +20,33 @@ from agentcore_release_gate.constants import (
     SCORING_LAG_SECONDS,
 )
 from agentcore_release_gate.evaluation import enforce_quality_gates, wait_for_ab_test_results
+from agentcore_release_gate.exceptions import (
+    ABTestAlreadyActiveError,
+    ABTestInterruptedError,
+    CandidateNotReadyError,
+    ConfigurationError,
+    GatewayTargetMismatchError,
+    StateJournalError,
+)
 from agentcore_release_gate.types import JsonObject, QualityGates
-from agentcore_release_gate.utils import wait_for
+from agentcore_release_gate.utils import require_env, wait_for
+
+
+def _load_state(path: Path) -> JsonObject:
+    """Read the recovery journal, or return an empty state when none exists yet.
+
+    Raises:
+        StateJournalError: If the journal exists but is not a JSON object.
+    """
+    if not path.exists():
+        return {}
+    try:
+        state = json.loads(path.read_text())
+    except json.JSONDecodeError as error:
+        raise StateJournalError(f"Recovery journal {path} is not valid JSON") from error
+    if not isinstance(state, dict):
+        raise StateJournalError(f"Recovery journal {path} must contain a JSON object")
+    return state
 
 
 class Deployment:
@@ -72,11 +97,11 @@ class Deployment:
         self.evaluation_timeout = evaluation_timeout
         self.scoring_lag_seconds = scoring_lag_seconds
         self.path = Path(state_file)
-        self.state: JsonObject = json.loads(self.path.read_text()) if self.path.exists() else {}
+        self.state = _load_state(self.path)
         self.aws = AwsClient(
-            region=os.environ["AWS_REGION"],
-            runtime_id=os.environ["RUNTIME_ID"],
-            gateway_id=os.environ["GATEWAY_ID"],
+            region=require_env("AWS_REGION"),
+            runtime_id=require_env("RUNTIME_ID"),
+            gateway_id=require_env("GATEWAY_ID"),
         )
 
     def _log(self, event: str, **details: Any) -> None:
@@ -123,7 +148,7 @@ class Deployment:
             The baseline runtime configuration used to create the candidate.
 
         Raises:
-            RuntimeError: If another A/B test is active on the gateway.
+            ABTestAlreadyActiveError: If another A/B test is active on the gateway.
         """
         self._log("deployment-preparing", controlEndpoint=self.control_endpoint_name)
         baseline = wait_for(lambda: self.aws.get_endpoint(self.control_endpoint_name), "READY")[
@@ -138,7 +163,7 @@ class Deployment:
             gateway_arn=gateway["gatewayArn"],
         )
         if self._active_ab_test() is not None:
-            raise RuntimeError(
+            raise ABTestAlreadyActiveError(
                 "An AgentCore A/B test is still active on this Gateway; recover it first"
             )
         self._ensure_targets()
@@ -154,7 +179,8 @@ class Deployment:
         """Create missing treatment resources and validate existing targets.
 
         Raises:
-            ValueError: If an existing target points at an incompatible runtime endpoint.
+            GatewayTargetMismatchError: If an existing target points at an incompatible
+                runtime endpoint.
         """
         try:
             self.aws.get_endpoint("treatment")
@@ -183,7 +209,7 @@ class Deployment:
                 self._log("gateway-target-existing", target=name)
                 target = self.aws.get_gateway_target(targets[name]["targetId"])
                 if target["targetConfiguration"] != desired:
-                    raise ValueError(
+                    raise GatewayTargetMismatchError(
                         "Existing gateway target does not match runtime/endpoint: " + name
                     )
             else:
@@ -393,7 +419,8 @@ class Deployment:
         """Wait while real or manually generated traffic accrues.
 
         Raises:
-            RuntimeError: If the AB test leaves RUNNING state before the window elapses.
+            ABTestInterruptedError: If the AB test leaves RUNNING state before the window
+                elapses.
         """
         ab_test_id = self.state["ab_test_id"]
         self._log(
@@ -412,7 +439,7 @@ class Deployment:
             ab_test = self.aws.get_ab_test(ab_test_id)
             execution_status = ab_test.get("executionStatus")
             if execution_status != "RUNNING":
-                raise RuntimeError(
+                raise ABTestInterruptedError(
                     f"AB test left RUNNING state during observation window "
                     f"(executionStatus={execution_status!r}); failing fast"
                 )
@@ -503,11 +530,11 @@ class Deployment:
         """Promote a candidate that passed observation and quality gates.
 
         Raises:
-            RuntimeError: If no candidate is ready for promotion.
+            CandidateNotReadyError: If no candidate is ready for promotion.
             BaseException: Re-raises promotion failures after rollback.
         """
         if not self.state.get("ready_to_promote"):
-            raise RuntimeError("No candidate is ready to promote; run observation first")
+            raise CandidateNotReadyError("No candidate is ready to promote; run observation first")
         version = self.state["version"]
         image = self.state["image"]
         with self._rollback_on_failure():
@@ -529,13 +556,13 @@ class Deployment:
         """Observe and promote a candidate in one automatic operation.
 
         Raises:
-            ValueError: If the observation window is shorter than the minimum.
+            ConfigurationError: If the observation window is shorter than the minimum.
 
         Args:
             image: Candidate ECR image URI to deploy and evaluate.
             seconds: Duration to observe experiment traffic before promotion.
         """
         if seconds < MINIMUM_OBSERVATION_SECONDS:
-            raise ValueError("Observation must last at least 60 seconds")
+            raise ConfigurationError("Observation must last at least 60 seconds")
         self.observe_candidate(image, seconds)
         self.promote_candidate()

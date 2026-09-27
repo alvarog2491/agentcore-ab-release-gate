@@ -12,6 +12,12 @@ from agentcore_release_gate.constants import (
     NO_SESSIONS_TIMEOUT_SECONDS,
     SCORING_LAG_SECONDS,
 )
+from agentcore_release_gate.exceptions import (
+    EvaluationTimeoutError,
+    InvalidEvaluatorResultError,
+    NoSessionsScoredError,
+    QualityGateFailedError,
+)
 from agentcore_release_gate.schemas import EvaluatorMetric
 from agentcore_release_gate.types import JsonObject, QualityGates, VariantResult, VariantResults
 
@@ -50,8 +56,8 @@ def _collect_variant_results(
         scored treatment session are omitted.
 
     Raises:
-        ValueError: If AgentCore returns a non-finite or non-numeric mean score, or a
-            missing one for a variant that already reports a sample size.
+        InvalidEvaluatorResultError: If AgentCore returns a non-finite or non-numeric mean
+            score, or a missing one for a variant that already reports a sample size.
     """
     collected: VariantResults = {}
     for raw_metric in (results or {}).get("evaluatorMetrics", []):
@@ -63,7 +69,7 @@ def _collect_variant_results(
         try:
             metric = EvaluatorMetric.model_validate(raw_metric)
         except ValidationError as error:
-            raise ValueError(
+            raise InvalidEvaluatorResultError(
                 "AgentCore returned an invalid mean score for " + evaluator_id
             ) from error
         # AgentCore fixes variant names to "C" (control) and "T1" (treatment).
@@ -71,7 +77,9 @@ def _collect_variant_results(
         if treatment is None or treatment.sampleSize < MINIMUM_RESULT_SAMPLE_SIZE:
             continue
         if treatment.mean is None:
-            raise ValueError("AgentCore returned an invalid mean score for " + evaluator_id)
+            raise InvalidEvaluatorResultError(
+                "AgentCore returned an invalid mean score for " + evaluator_id
+            )
         collected[evaluator_id] = VariantResult(
             mean=treatment.mean,
             isSignificant=treatment.isSignificant,
@@ -151,8 +159,8 @@ def wait_for_ab_test_results(
         Available treatment metrics for every requested evaluator.
 
     Raises:
-        TimeoutError: If any requested evaluator lacks results before ``timeout``, or if
-            no sessions are scored within ``no_sessions_timeout``.
+        EvaluationTimeoutError: If any requested evaluator lacks results before ``timeout``.
+        NoSessionsScoredError: If no sessions are scored within ``no_sessions_timeout``.
     """
     start = time.monotonic()
     deadline = start + timeout
@@ -217,7 +225,7 @@ def wait_for_ab_test_results(
                 flush=True,
             )
             if total_samples == 0 and now > no_sessions_deadline:
-                raise TimeoutError(
+                raise NoSessionsScoredError(
                     f"No sessions scored after {int(no_sessions_timeout)}s — "
                     "check that traffic is flowing through the gateway and that "
                     "the online evaluation configs are correctly linked to the A/B test"
@@ -226,7 +234,7 @@ def wait_for_ab_test_results(
 
     if latest_collected.keys() >= quality_gates.keys():
         return _emit_final_results(ab_test_id, latest_collected)
-    raise TimeoutError("Timed out waiting for AgentCore A/B test results")
+    raise EvaluationTimeoutError("Timed out waiting for AgentCore A/B test results")
 
 
 GateFailureReason = Literal["below_minimum", "not_significant", "regressed"]
@@ -278,7 +286,7 @@ def enforce_quality_gates(
             the minimum score and regression checks apply.
 
     Raises:
-        ValueError: If an evaluator fails one or more quality requirements.
+        QualityGateFailedError: If an evaluator fails one or more quality requirements.
     """
     failed: dict[str, VariantResult] = {}
     for name, minimum in quality_gates.items():
@@ -286,4 +294,6 @@ def enforce_quality_gates(
         if gate_failure_reason(variant, minimum, require_significance=require_significance):
             failed[name] = variant
     if failed:
-        raise ValueError("AgentCore A/B test quality gates failed: " + json.dumps(failed))
+        raise QualityGateFailedError(
+            "AgentCore A/B test quality gates failed: " + json.dumps(failed)
+        )

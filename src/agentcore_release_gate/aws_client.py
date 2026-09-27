@@ -12,6 +12,7 @@ from agentcore_release_gate.constants import (
     AWS_MAX_ATTEMPTS,
     AWS_READ_TIMEOUT_SECONDS,
 )
+from agentcore_release_gate.exceptions import ImageRegionMismatchError
 from agentcore_release_gate.types import JsonObject
 from agentcore_release_gate.utils import _parse_image
 
@@ -347,11 +348,12 @@ class AwsClient:
             The input URI when already digest-pinned, otherwise its resolved digest URI.
 
         Raises:
-            ValueError: If the image belongs to a different AWS Region.
+            InvalidImageUriError: If the image is not a tagged or digest-pinned ECR URI.
+            ImageRegionMismatchError: If the image belongs to a different AWS Region.
         """
         parsed = _parse_image(image)
         if parsed["region"] != self.region:
-            raise ValueError("ECR image and AgentCore must use the same AWS Region")
+            raise ImageRegionMismatchError("ECR image and AgentCore must use the same AWS Region")
         if parsed["digest"]:
             return image
         result = self._ecr.describe_images(

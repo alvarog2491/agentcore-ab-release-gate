@@ -9,16 +9,18 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from agentcore_release_gate.deployment import Deployment
+from agentcore_release_gate.exceptions import ConfigurationError, WorkflowCancelledError
 from agentcore_release_gate.report import build_report, publish_report
 from agentcore_release_gate.schemas import ActionConfig
+from agentcore_release_gate.utils import require_env
 from agentcore_release_gate.workflow_logging import get_workflow_logger
 
 logger = get_workflow_logger()
 
 
 def _interrupted(_signal: int, _frame: object) -> None:
-    """Turn SIGTERM/SIGINT into KeyboardInterrupt so rollback handlers still run."""
-    raise KeyboardInterrupt("Workflow interrupted; attempting rollback")
+    """Turn SIGTERM/SIGINT into an exception so rollback handlers still run."""
+    raise WorkflowCancelledError("Workflow interrupted; attempting rollback")
 
 
 def cmd_report() -> None:
@@ -27,7 +29,7 @@ def cmd_report() -> None:
     Missing pull-request context is expected for non-PR workflows and skips
     reporting without affecting the deployment outcome.
     """
-    event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
+    event = json.loads(Path(require_env("GITHUB_EVENT_PATH")).read_text(encoding="utf-8"))
     pull_request = event.get("pull_request", {}).get("number")
     if not pull_request:
         return
@@ -37,12 +39,12 @@ def cmd_report() -> None:
         state = json.loads(Path(state_path).read_text(encoding="utf-8"))
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
     run_url = (
-        f"{server}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+        f"{server}/{require_env('GITHUB_REPOSITORY')}/actions/runs/{require_env('GITHUB_RUN_ID')}"
     )
     report = build_report(state, os.environ.get("DEPLOY_OUTCOME", "failure"), run_url)
     publish_report(
-        os.environ["GITHUB_TOKEN"],
-        os.environ["GITHUB_REPOSITORY"],
+        require_env("GITHUB_TOKEN"),
+        require_env("GITHUB_REPOSITORY"),
         int(pull_request),
         report,
         os.environ.get("GITHUB_API_URL", "https://api.github.com"),
@@ -75,21 +77,23 @@ def _parse_int_env(name: str, default: str, label: str) -> int:
     try:
         return int(os.environ.get(name, default))
     except (TypeError, ValueError) as error:
-        raise ValueError(f"{label} must be an integer") from error
+        raise ConfigurationError(f"{label} must be an integer") from error
 
 
 def _load_action_config() -> ActionConfig:
     """Parse and validate the action's configuration from environment variables.
 
     Raises:
-        ValueError: If any input is missing, malformed, or out of range. Wraps
+        ConfigurationError: If any input is missing, malformed, or out of range. Wraps
             pydantic.ValidationError so the CLI surfaces a single readable message
             instead of a full validation-error dump.
     """
     try:
-        gates = json.loads(os.environ["QUALITY_GATES"])
+        gates = json.loads(require_env("QUALITY_GATES"))
     except (TypeError, json.JSONDecodeError) as error:
-        raise ValueError("quality-gates must map evaluator IDs to minimum scores") from error
+        raise ConfigurationError(
+            "quality-gates must map evaluator IDs to minimum scores"
+        ) from error
 
     try:
         return ActionConfig(
@@ -98,8 +102,8 @@ def _load_action_config() -> ActionConfig:
                 os.environ.get("REQUIRE_SIGNIFICANCE", "true").strip().lower() != "false"
             ),
             control_endpoint_name=os.environ.get("CONTROL_ENDPOINT_NAME", "control"),
-            evaluation_config_id=os.environ["EVALUATION_CONFIG_ID"],
-            ab_test_role_arn=os.environ["AB_TEST_ROLE_ARN"],
+            evaluation_config_id=require_env("EVALUATION_CONFIG_ID"),
+            ab_test_role_arn=require_env("AB_TEST_ROLE_ARN"),
             control_weight=_parse_int_env("CONTROL_WEIGHT", "80", "control-weight"),
             treatment_weight=_parse_int_env("TREATMENT_WEIGHT", "20", "treatment-weight"),
             evaluation_timeout=_parse_int_env(
@@ -109,7 +113,7 @@ def _load_action_config() -> ActionConfig:
             scoring_lag_seconds=_parse_int_env("SCORING_LAG_SECONDS", "120", "scoring-lag-seconds"),
         )
     except ValidationError as error:
-        raise ValueError("; ".join(err["msg"] for err in error.errors())) from error
+        raise ConfigurationError("; ".join(err["msg"] for err in error.errors())) from error
 
 
 def _build_deployment(state_file: str) -> tuple[Deployment, int]:
@@ -137,7 +141,7 @@ def cmd_observe(state_file: str) -> None:
         state_file: Path where deployment state is persisted for later promotion.
     """
     deployment, duration = _build_deployment(state_file)
-    deployment.observe_candidate(os.environ["IMAGE_URI"], duration)
+    deployment.observe_candidate(require_env("IMAGE_URI"), duration)
 
 
 def cmd_run(state_file: str) -> None:
@@ -147,7 +151,7 @@ def cmd_run(state_file: str) -> None:
         state_file: Path where deployment state is persisted for recovery.
     """
     deployment, duration = _build_deployment(state_file)
-    deployment.run(os.environ["IMAGE_URI"], duration)
+    deployment.run(require_env("IMAGE_URI"), duration)
 
 
 def main() -> None:
@@ -164,7 +168,7 @@ def main() -> None:
             logger.warning("::warning::Unable to publish AgentCore A/B PR report: %s", error)
         return
 
-    state_file = os.environ["STATE_FILE"]
+    state_file = require_env("STATE_FILE")
     signal.signal(signal.SIGTERM, _interrupted)
     signal.signal(signal.SIGINT, _interrupted)
 

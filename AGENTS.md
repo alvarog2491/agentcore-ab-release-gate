@@ -47,7 +47,8 @@ This is a composite GitHub Action that evaluates a new Amazon Bedrock AgentCore 
 - `aws_client.py` — thin wrapper over `boto3` for AgentCore Control, AgentCore (data-plane), and ECR API calls. Client attributes are typed `Any` deliberately (see the comment in `__init__`) so this module's `JsonObject`-based contract stays uniform; `boto3-stubs` is still installed for editor/mypy completion.
 - `report.py` — builds and publishes the optional pull-request comment.
 - `schemas.py` — Pydantic v2 models: `ActionConfig` validates the action's environment-variable inputs (weights, quality gates, timeouts); `EvaluatorMetric`/`VariantMetric`/`ControlStats` validate one evaluator's slice of a `GetABTest` response.
-- `utils.py` — `wait_for` poller, ECR image URI parsing.
+- `exceptions.py` — every deliberate failure, rooted at `ReleaseGateError`. Each class also inherits the built-in it replaced (`ValueError`/`RuntimeError`/`TimeoutError`); raise one of these rather than a bare built-in. Pydantic validators in `schemas.py` are the exception: they must raise `ValueError`.
+- `utils.py` — `wait_for` poller, `require_env`, ECR image URI parsing.
 - `workflow_logging.py` — `get_workflow_logger()`: the `agentcore_release_gate` logger that `main.py` uses to emit GitHub Actions `::error::`/`::warning::` workflow commands to stdout.
 - `types.py` — `JsonObject`, `QualityGates`, `VariantResult` type aliases for the AWS payloads deliberately left untyped (see `schemas.py`'s module docstring for why).
 - `constants.py` — timeouts, poll intervals, weight defaults.

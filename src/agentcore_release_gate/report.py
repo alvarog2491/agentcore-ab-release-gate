@@ -11,6 +11,7 @@ from agentcore_release_gate.constants import (
     GITHUB_REQUEST_TIMEOUT_SECONDS,
 )
 from agentcore_release_gate.evaluation import gate_failure_reason
+from agentcore_release_gate.exceptions import ConfigurationError, UnexpectedGitHubResponseError
 from agentcore_release_gate.types import GitHubResponse, JsonObject
 
 COMMENT_MARKER = "<!-- agentcore-ab-release-gate-report -->"
@@ -139,12 +140,13 @@ def publish_report(
         api_url: Base URL for the GitHub API.
 
     Raises:
-        ValueError: If the repository or pull-request number is invalid.
+        ConfigurationError: If the repository or pull-request number is invalid.
+        UnexpectedGitHubResponseError: If GitHub's comment listing is not a JSON array.
     """
     if not REPOSITORY_PATTERN.fullmatch(repository):
-        raise ValueError("GitHub repository must use owner/name format")
+        raise ConfigurationError("GitHub repository must use owner/name format")
     if pull_request <= 0:
-        raise ValueError("Pull request number must be positive")
+        raise ConfigurationError("Pull request number must be positive")
 
     comments_url = f"{api_url.rstrip('/')}/repos/{repository}/issues/{pull_request}/comments"
     owned_comment = None
@@ -155,7 +157,7 @@ def publish_report(
             f"{comments_url}?per_page={GITHUB_COMMENTS_PAGE_SIZE}&page={page}",
         )
         if not isinstance(response, list):
-            raise ValueError("GitHub comments response must be a JSON array")
+            raise UnexpectedGitHubResponseError("GitHub comments response must be a JSON array")
         comments = response
         owned_comment = next(
             (

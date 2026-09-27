@@ -1,5 +1,6 @@
-"""Shared input validation and AWS readiness helpers."""
+"""Shared input validation, environment access, and AWS readiness helpers."""
 
+import os
 import re
 import time
 from collections.abc import Callable, Collection
@@ -10,6 +11,12 @@ from agentcore_release_gate.constants import (
     AWS_POLL_INTERVAL_SECONDS,
     DEFAULT_AWS_WAIT_TIMEOUT_SECONDS,
     SHA256_HEX_LENGTH,
+)
+from agentcore_release_gate.exceptions import (
+    AwsResourceFailedError,
+    AwsWaitTimeoutError,
+    ConfigurationError,
+    InvalidImageUriError,
 )
 from agentcore_release_gate.types import EcrImageParts
 
@@ -22,11 +29,23 @@ ECR_IMAGE_PATTERN = re.compile(
 )
 
 
+def require_env(name: str) -> str:
+    """Return a required environment variable, failing with a message that names it.
+
+    Raises:
+        ConfigurationError: If the variable is unset.
+    """
+    try:
+        return os.environ[name]
+    except KeyError:
+        raise ConfigurationError(f"Required environment variable {name} is not set") from None
+
+
 def _parse_image(image: str) -> EcrImageParts:
     """Validate an ECR image URI and return its registry components."""
     match = ECR_IMAGE_PATTERN.fullmatch(image)
     if not match:
-        raise ValueError(
+        raise InvalidImageUriError(
             "AgentCore requires an ECR image URI with a tag or digest. Mirror Docker Hub/GHCR "
             "images to ECR before using this action; it does not publish images."
         )
@@ -56,8 +75,8 @@ def wait_for(
         The first resource representation matching all requested conditions.
 
     Raises:
-        RuntimeError: If AWS reports a failed resource status.
-        TimeoutError: If the requested state is not reached before ``timeout``.
+        AwsResourceFailedError: If AWS reports a failed resource status.
+        AwsWaitTimeoutError: If the requested state is not reached before ``timeout``.
     """
     statuses = (status,) if isinstance(status, str) else status
     deadline = time.monotonic() + timeout
@@ -73,8 +92,8 @@ def wait_for(
         if isinstance(resource_status, str) and (
             "FAILED" in resource_status or "ERROR" in resource_status.upper()
         ):
-            raise RuntimeError("AWS resource failed to become ready")
+            raise AwsResourceFailedError("AWS resource failed to become ready")
         if on_poll is not None:
             on_poll(result)
         time.sleep(AWS_POLL_INTERVAL_SECONDS)
-    raise TimeoutError("Timed out waiting for AWS readiness")
+    raise AwsWaitTimeoutError("Timed out waiting for AWS readiness")
