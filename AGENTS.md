@@ -86,7 +86,7 @@ Always choose the prefix that matches the actual change. When a PR contains mult
 
 ## Changing action inputs/outputs
 
-Any change to inputs or outputs in `action.yml` requires updating the README table and bumping the pinned version in the README via `scripts/bump_readme_pin.py`.
+Any change to inputs or outputs in `action.yml` requires updating the README table. The README's usage examples reference the floating `@v1` tag, which the release job moves automatically, so they need no manual bump.
 
 ## uv version
 
