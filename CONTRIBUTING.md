@@ -15,33 +15,18 @@ Dependency-groups (`pytest`, `ruff`, `mypy`, `boto3-stubs`) sync by default. Pas
 |---|---|
 | `uv run pytest` | Run the full test suite |
 | `uv run pytest --cov=src/agentcore_release_gate --cov=main --cov-report=term-missing` | Run with coverage (CI enforces >=85%) |
-| `uv run ruff check .` | Lint `src/`, `main.py`, `scripts/`, and `tests/` |
+| `uv run ruff check .` | Lint `src/`, `main.py`, and `tests/` |
 | `uv run ruff format .` | Auto-format all Python files |
 | `uv run mypy src main.py` | Type-check the action's own source (strict mode) |
 
 ## Project layout
 
 ```
-action.yml                       # action manifest — inputs, outputs, composite steps
-main.py                          # entry point called by action.yml via `uv run`
-src/agentcore_release_gate/
-  deployment.py                  # Deployment lifecycle: baseline, endpoints, A/B test, promote/rollback
-  evaluation.py                  # GetABTest polling and quality-gate enforcement
-  aws_client.py                  # thin boto3 wrapper for AgentCore Control, AgentCore, and ECR
-  schemas.py                     # Pydantic models: action-input validation and AB-test result parsing
-  report.py                      # pull-request result comment
-  utils.py                       # wait_for poller, ECR image URI parsing
-  types.py                       # shared type aliases for the AWS payloads left untyped
-  constants.py                   # timeouts, poll intervals, weight defaults
-tests/
-  test_action.py                 # integration-level tests for the full action flow
-  test_bump_readme_pin.py
-  test_report.py
-scripts/
-  bump_readme_pin.py             # utility for pinning the README version badge
-.github/workflows/
-  ci.yml                          # lint, type-check, test, actionlint, a composite-action smoke
-                                   # test, and (on push to main) the semantic-release job
+action.yml                   # action manifest — inputs, outputs, composite steps
+main.py                      # entry point called by action.yml via `uv run`
+src/agentcore_release_gate/  # deployment, evaluation, AWS client, and PR report logic
+tests/                       # one test_<module>.py per module, plus shared AWS mocks and fixtures
+.github/workflows/           # CI: lint, type-check, test, smoke test, and semantic release
 ```
 
 ## Running tests
@@ -50,7 +35,7 @@ scripts/
 uv run pytest
 ```
 
-Tests stub AWS API calls with hand-written fakes validated against the real botocore
+Tests stub AWS API calls with hand-written mocks validated against the real botocore
 input shapes (`botocore.validate.validate_parameters`), not `moto` — `moto` does not
 model AgentCore's A/B test or online-evaluation-config operations at all, which are
 this action's core logic. No real AWS credentials or resources are needed.

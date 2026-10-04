@@ -1,15 +1,16 @@
-"""Verify PR report rendering and optional GitHub publication."""
+"""Report: PR comment rendering and optional GitHub publication."""
 
 import json
-import sys
-from pathlib import Path
 
 import pytest
 
-ACTION = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ACTION))
-
+from agentcore_release_gate.constants import GITHUB_COMMENTS_PAGE_SIZE
 from agentcore_release_gate.evaluation import enforce_quality_gates
+from agentcore_release_gate.exceptions import (
+    ConfigurationError,
+    QualityGateFailedError,
+    UnexpectedGitHubResponseError,
+)
 from agentcore_release_gate.report import COMMENT_MARKER, build_report, publish_report
 
 
@@ -40,7 +41,7 @@ def stub_urlopen(monkeypatch):
     return install
 
 
-def test_report_includes_decision_scores_and_thresholds():
+def test_build_report_includes_decision_scores_and_thresholds():
     state = {
         "finished": "promoted",
         "version": "2",
@@ -78,14 +79,14 @@ def test_report_includes_decision_scores_and_thresholds():
     assert "Yes" in report
 
 
-def test_report_handles_failure_before_deployment_state_exists():
+def test_build_report_explains_failure_without_deployment_state():
     report = build_report({}, "failure")
 
     assert "Failed" in report
     assert "No deployment state was recorded" in report
 
 
-def test_report_shows_rolled_back_heading_and_per_evaluator_failure_reasons():
+def test_build_report_shows_rollback_and_per_evaluator_failure_reasons():
     state = {
         "finished": "rolled_back",
         "quality_gates": {
@@ -132,13 +133,13 @@ def test_report_shows_rolled_back_heading_and_per_evaluator_failure_reasons():
     assert "❌ Missing" in report
 
 
-def test_report_includes_workflow_run_link():
+def test_build_report_links_to_workflow_run():
     report = build_report({"finished": "rolled_back"}, "failure", "https://example.com/run/1")
 
     assert "[View workflow run](https://example.com/run/1)" in report
 
 
-def test_publish_updates_existing_bot_comment(stub_urlopen):
+def test_publish_report_updates_existing_bot_comment(stub_urlopen):
     requests = stub_urlopen(
         [{"id": 42, "body": COMMENT_MARKER, "user": {"type": "Bot"}}],
         {"id": 42},
@@ -151,7 +152,7 @@ def test_publish_updates_existing_bot_comment(stub_urlopen):
     assert json.loads(requests[1][0].data) == {"body": "report"}
 
 
-def test_publish_creates_comment_when_no_owned_comment_exists(stub_urlopen):
+def test_publish_report_creates_comment_when_no_bot_comment_exists(stub_urlopen):
     requests = stub_urlopen(
         [{"id": 9, "body": COMMENT_MARKER, "user": {"type": "User"}}],
         {"id": 10},
@@ -164,58 +165,35 @@ def test_publish_creates_comment_when_no_owned_comment_exists(stub_urlopen):
 
 
 @pytest.mark.parametrize("repository", ["invalid", "/repository", "owner/"])
-def test_publish_rejects_invalid_repository(repository):
-    with pytest.raises(ValueError, match="repository"):
+def test_publish_report_rejects_invalid_repository(repository):
+    with pytest.raises(ConfigurationError, match="repository"):
         publish_report("token", repository, 7, "report")
 
 
 @pytest.mark.parametrize("pull_request", [0, -1])
-def test_publish_rejects_non_positive_pull_request(pull_request):
-    with pytest.raises(ValueError, match="positive"):
+def test_publish_report_rejects_non_positive_pull_request(pull_request):
+    with pytest.raises(ConfigurationError, match="positive"):
         publish_report("token", "owner/repository", pull_request, "report")
 
 
-def test_publish_rejects_non_list_comments_response(stub_urlopen):
+def test_publish_report_rejects_non_list_comments_response(stub_urlopen):
     stub_urlopen({"error": "not a list"})
 
-    with pytest.raises(ValueError, match="JSON array"):
+    with pytest.raises(UnexpectedGitHubResponseError, match="JSON array"):
         publish_report("token", "owner/repository", 7, "report")
 
 
-@pytest.fixture
-def stub_urlopen_paginated(monkeypatch):
-    from agentcore_release_gate.constants import GITHUB_COMMENTS_PAGE_SIZE
-
-    page_one = [
+def test_publish_report_pages_through_comments_when_first_page_is_full(stub_urlopen):
+    unrelated = [
         {"id": i, "body": "unrelated", "user": {"type": "User"}}
         for i in range(GITHUB_COMMENTS_PAGE_SIZE)
     ]
-    page_two = [{"id": 999, "body": COMMENT_MARKER, "user": {"type": "Bot"}}]
-    responses = iter([page_one, page_two, {"id": 999}])
-    requests = []
+    owned = [{"id": 999, "body": COMMENT_MARKER, "user": {"type": "Bot"}}]
+    requests = stub_urlopen(unrelated, owned, {"id": 999})
 
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return False
-
-        def read(self):
-            return json.dumps(next(responses)).encode()
-
-    def open_request(request, timeout):
-        requests.append(request)
-        return Response()
-
-    monkeypatch.setattr("agentcore_release_gate.report.urlopen", open_request)
-    return requests
-
-
-def test_publish_paginates_through_comments_when_first_page_is_full(stub_urlopen_paginated):
     publish_report("token", "owner/repository", 7, "report")
 
-    urls = [request.full_url for request in stub_urlopen_paginated]
+    urls = [request.full_url for request, _timeout in requests]
     assert "page=1" in urls[0]
     assert "page=2" in urls[1]
     assert urls[2].endswith("/repos/owner/repository/issues/comments/999")
@@ -248,7 +226,7 @@ def _result_cell(report):
     return row.rstrip(" |").rsplit("| ", 1)[-1]
 
 
-def test_report_passes_non_significant_result_when_significance_not_required():
+def test_build_report_passes_non_significant_result_when_significance_not_required():
     report = build_report(_single_gate_state(require_significance=False), "success")
 
     assert "✅ AgentCore A/B deployment promoted" in report
@@ -257,26 +235,26 @@ def test_report_passes_non_significant_result_when_significance_not_required():
     assert "Not significant" not in report
 
 
-def test_report_fails_non_significant_result_when_significance_required():
+def test_build_report_fails_non_significant_result_when_significance_required():
     report = build_report(_single_gate_state(require_significance=True), "success")
 
     assert _result_cell(report) == "❌ Not significant"
     assert "No (not required)" not in report
 
 
-def test_report_defaults_to_requiring_significance_for_older_state_files():
+def test_build_report_requires_significance_for_journals_without_the_setting():
     report = build_report(_single_gate_state(), "success")
 
     assert _result_cell(report) == "❌ Not significant"
 
 
-def test_report_flags_below_minimum_when_significance_not_required():
+def test_build_report_flags_below_minimum_when_significance_not_required():
     report = build_report(_single_gate_state(require_significance=False, mean=0.4), "success")
 
     assert _result_cell(report) == "❌ Below minimum"
 
 
-def test_report_flags_regression_when_significance_not_required():
+def test_build_report_flags_regression_when_significance_not_required():
     state = _single_gate_state(require_significance=False, absoluteChange=-0.1)
 
     assert _result_cell(build_report(state, "success")) == "❌ Regressed vs control"
@@ -286,7 +264,7 @@ def test_report_flags_regression_when_significance_not_required():
 @pytest.mark.parametrize("change", [-0.1, 0.0, 0.2, None])
 @pytest.mark.parametrize("significant", [True, False])
 @pytest.mark.parametrize(("mean", "minimum"), [(0.4, 0.5), (0.5, 0.5), (0.9, 0.5)])
-def test_report_result_matches_enforced_gate(
+def test_build_report_result_matches_enforce_quality_gates(
     mean, minimum, significant, change, require_significance
 ):
     variant = {
@@ -310,7 +288,7 @@ def test_report_result_matches_enforced_gate(
             require_significance=require_significance,
         )
         gate_passed = True
-    except ValueError:
+    except QualityGateFailedError:
         gate_passed = False
 
     assert _result_cell(build_report(state, "success")).startswith("✅") is gate_passed

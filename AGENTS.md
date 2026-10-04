@@ -12,10 +12,10 @@ uv sync
 uv run pytest
 
 # Run a single test file
-uv run pytest tests/test_action.py
+uv run pytest tests/test_deployment.py
 
 # Run a single test by name
-uv run pytest tests/test_action.py::test_name
+uv run pytest tests/test_deployment.py::test_name
 
 # Run with coverage (fails below [tool.coverage.report].fail_under in pyproject.toml)
 uv run pytest --cov=src/agentcore_release_gate --cov=main --cov-report=term-missing
@@ -30,10 +30,19 @@ uv run ruff format .
 uv run mypy src main.py
 ```
 
-Tests stub AWS API calls with hand-written fakes validated against the real botocore
+Tests stub AWS API calls with hand-written mocks validated against the real botocore
 input shapes (`botocore.validate.validate_parameters`) — no real AWS credentials or
-`moto` needed; the fakes exercise the actual request/response contract instead of an
-independently-maintained mock service.
+`moto` needed; the mocks exercise the actual request/response contract instead of an
+independently-maintained AWS emulator.
+
+Each `tests/test_<module>.py` covers the module of the same name (`test_main.py` covers
+`main.py`). The mocks live in `tests/aws_mocks.py`; `tests/conftest.py` wires them into the
+`clock`, `aws`, and `deployment` fixtures.
+
+Test names follow `test_<unit>_<expected behavior>[_when_<condition>]`, where `<unit>` is the
+function or method under test (`run`, `observe`, `promote`, `rollback` for `Deployment`;
+`<name>_subcommand` in `test_main.py`). Assert the specific `ReleaseGateError` subclass, not
+the built-in it inherits.
 
 ## Architecture
 

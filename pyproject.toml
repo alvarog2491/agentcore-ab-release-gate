@@ -33,11 +33,6 @@ target-version = "py313"
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
 
-[tool.ruff.lint.per-file-ignores]
-"tests/test_action.py" = ["E402"]
-"tests/test_report.py" = ["E402"]
-"tests/test_exceptions.py" = ["E402"]
-
 [tool.mypy]
 python_version = "3.13"
 mypy_path = "src"
@@ -50,7 +45,7 @@ module = "tests.*"
 disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = [".", "src", "tests"]
 
 [tool.coverage.run]
 source = ["src/agentcore_release_gate", "main"]
