@@ -8,7 +8,7 @@ import pytest
 from aws_mocks import ARN, DEFAULT_RESULTS, GATEWAY_ARN, IMAGE, ConflictException
 from botocore.exceptions import ClientError
 
-from agentcore_release_gate.deployment import load_state
+from agentcore_release_gate.deployment import Deployment
 from agentcore_release_gate.exceptions import (
     ABTestAlreadyActiveError,
     ABTestInterruptedError,
@@ -17,9 +17,9 @@ from agentcore_release_gate.exceptions import (
     EvaluationTimeoutError,
     GatewayTargetMismatchError,
     QualityGateFailedError,
-    StateJournalError,
     WorkflowCancelledError,
 )
+from agentcore_release_gate.state import DeploymentState, load_state
 
 
 def _raise(error):
@@ -38,22 +38,6 @@ def _logged_events(logs):
 # --- State journal ---
 
 
-def test_load_state_returns_empty_state_when_journal_is_missing(tmp_path):
-    assert load_state(tmp_path / "state.json") == {}
-
-
-@pytest.mark.parametrize(
-    ("content", "message"),
-    [("{truncated", "not valid JSON"), ("[]", "must contain a JSON object")],
-    ids=["corrupt", "not-an-object"],
-)
-def test_load_state_rejects_unreadable_journal(tmp_path, content, message):
-    path = tmp_path / "state.json"
-    path.write_text(content)
-    with pytest.raises(StateJournalError, match=message):
-        load_state(path)
-
-
 def test_checkpoint_keeps_previous_journal_when_write_fails(deployment, monkeypatch):
     deployment._checkpoint(baseline="1")
     monkeypatch.setattr(Path, "replace", _raise(OSError("Disk unavailable")))
@@ -61,8 +45,15 @@ def test_checkpoint_keeps_previous_journal_when_write_fails(deployment, monkeypa
     with pytest.raises(OSError, match="Disk unavailable"):
         deployment._checkpoint(finished="promoted")
 
-    assert deployment.state == {"baseline": "1"}
-    assert json.loads(deployment.path.read_text()) == {"baseline": "1"}
+    assert deployment.state == DeploymentState(baseline="1")
+    assert load_state(deployment.path) == DeploymentState(baseline="1")
+
+
+def test_checkpoint_rejects_unknown_journal_field(deployment):
+    with pytest.raises(TypeError):
+        deployment._checkpoint(abtest_id="typo")
+
+    assert not deployment.path.exists()
 
 
 # --- run: deploy, observe, promote ---
@@ -74,9 +65,9 @@ def test_run_promotes_candidate_on_both_endpoints_after_full_observation(deploym
     deployment.run(IMAGE, 7200)
 
     assert clock.value - start >= 7200
-    assert deployment.state["finished"] == "promoted"
+    assert deployment.state.finished == "promoted"
     assert deployment.aws.agentcore_control.endpoints == {"control": "2", "treatment": "2"}
-    ab_test_id = deployment.state["ab_test_id"]
+    ab_test_id = deployment.state.ab_test_id
     assert deployment.aws.agentcore.tests[ab_test_id]["executionStatus"] == "STOPPED"
 
 
@@ -104,9 +95,9 @@ def test_run_gates_custom_evaluator_on_its_own_score_scale(deployment):
 
     deployment.run(IMAGE, 60)
 
-    assert deployment.state["finished"] == "promoted"
-    assert deployment.state["quality_gates"] == {"custom-eval-abcdefghij": 3.5}
-    assert deployment.state["variant_results"]["custom-eval-abcdefghij"]["mean"] == 4.0
+    assert deployment.state.finished == "promoted"
+    assert deployment.state.quality_gates == {"custom-eval-abcdefghij": 3.5}
+    assert deployment.state.variant_results["custom-eval-abcdefghij"]["mean"] == 4.0
 
 
 def test_run_keeps_polling_until_evaluator_results_appear(deployment):
@@ -115,9 +106,9 @@ def test_run_keeps_polling_until_evaluator_results_appear(deployment):
     observed = False
     result_polls = 0
 
-    def observe_and_mark_done(seconds):
+    def observe_and_mark_done(ab_test_id, seconds):
         nonlocal observed
-        observe(seconds)
+        observe(ab_test_id, seconds)
         observed = True
 
     def get_ab_test_without_results_on_first_result_poll(**kwargs):
@@ -134,8 +125,8 @@ def test_run_keeps_polling_until_evaluator_results_appear(deployment):
 
     deployment.run(IMAGE, 60)
 
-    assert deployment.state["finished"] == "promoted"
-    assert deployment.state["variant_results"].keys() == deployment.quality_gates.keys()
+    assert deployment.state.finished == "promoted"
+    assert deployment.state.variant_results.keys() == deployment.quality_gates.keys()
 
 
 def test_run_promotes_non_significant_result_when_significance_not_required(deployment):
@@ -146,7 +137,7 @@ def test_run_promotes_non_significant_result_when_significance_not_required(depl
 
     deployment.run(IMAGE, 60)
 
-    assert deployment.state["finished"] == "promoted"
+    assert deployment.state.finished == "promoted"
 
 
 def test_run_rejects_observation_shorter_than_minimum(deployment):
@@ -179,8 +170,8 @@ def test_run_rolls_back_when_score_is_below_minimum(deployment):
     with pytest.raises(QualityGateFailedError):
         deployment.run(IMAGE, 60)
 
-    assert deployment.state["finished"] == "rolled_back"
-    assert deployment.state["variant_results"]["Builtin.Helpfulness"]["mean"] == 0.8
+    assert deployment.state.finished == "rolled_back"
+    assert deployment.state.variant_results["Builtin.Helpfulness"]["mean"] == 0.8
     assert deployment.aws.agentcore_control.endpoints == {"control": "1", "treatment": "1"}
 
 
@@ -192,7 +183,7 @@ def test_run_rolls_back_non_significant_result_instead_of_timing_out(deployment)
     with pytest.raises(QualityGateFailedError):
         deployment.run(IMAGE, 60)
 
-    assert deployment.state["finished"] == "rolled_back"
+    assert deployment.state.finished == "rolled_back"
 
 
 def test_run_rolls_back_when_evaluator_results_never_arrive(deployment):
@@ -201,7 +192,7 @@ def test_run_rolls_back_when_evaluator_results_never_arrive(deployment):
     with pytest.raises(EvaluationTimeoutError, match="A/B test results"):
         deployment.run(IMAGE, 60)
 
-    assert deployment.state["finished"] == "rolled_back"
+    assert deployment.state.finished == "rolled_back"
 
 
 # --- observe_candidate / promote_candidate: the split, approval-gated path ---
@@ -210,16 +201,27 @@ def test_run_rolls_back_when_evaluator_results_never_arrive(deployment):
 def test_observe_then_promote_reaches_same_end_state_as_run(deployment):
     deployment.observe_candidate(IMAGE, 60)
 
-    assert deployment.state["ready_to_promote"] is True
-    assert "finished" not in deployment.state
-    ab_test_id = deployment.state["ab_test_id"]
+    assert deployment.state.ready_to_promote is True
+    assert deployment.state.finished is None
+    ab_test_id = deployment.state.ab_test_id
     assert deployment.aws.agentcore.tests[ab_test_id]["executionStatus"] == "RUNNING"
 
     deployment.promote_candidate()
 
-    assert deployment.state["finished"] == "promoted"
+    assert deployment.state.finished == "promoted"
     assert deployment.aws.agentcore_control.endpoints == {"control": "2", "treatment": "2"}
     assert deployment.aws.agentcore.tests[ab_test_id]["executionStatus"] == "STOPPED"
+
+
+def test_promote_uses_journaled_control_endpoint_when_inputs_are_absent(deployment):
+    deployment.control_endpoint_name = "prod"
+    deployment.aws.agentcore_control.endpoints = {"prod": "1"}
+    deployment.observe_candidate(IMAGE, 60)
+
+    # The split-mode promote job builds a Deployment without the action's inputs.
+    Deployment(str(deployment.path), deployment.aws).promote_candidate()
+
+    assert deployment.aws.agentcore_control.endpoints == {"prod": "2", "treatment": "2"}
 
 
 def test_promote_rejects_candidate_that_was_not_observed(deployment):
@@ -233,8 +235,8 @@ def test_observe_rolls_back_without_promoting_when_gates_fail(deployment):
     with pytest.raises(QualityGateFailedError):
         deployment.observe_candidate(IMAGE, 60)
 
-    assert deployment.state["finished"] == "rolled_back"
-    assert "ready_to_promote" not in deployment.state
+    assert deployment.state.finished == "rolled_back"
+    assert deployment.state.ready_to_promote is False
     assert deployment.aws.agentcore_control.endpoints["treatment"] == "1"
 
 
@@ -277,8 +279,8 @@ def test_observe_rolls_back_when_ab_test_stops_during_observation(deployment):
     with pytest.raises(ABTestInterruptedError, match="left RUNNING state"):
         deployment.observe_candidate(IMAGE, 300)
 
-    assert deployment.state["finished"] == "rolled_back"
-    assert "ready_to_promote" not in deployment.state
+    assert deployment.state.finished == "rolled_back"
+    assert deployment.state.ready_to_promote is False
 
 
 # --- observe_candidate: experiment setup ---
@@ -290,7 +292,7 @@ def test_observe_creates_ab_test_with_configured_weights_and_targets(deployment)
 
     deployment.observe_candidate(IMAGE, 60)
 
-    ab_test_id = deployment.state["ab_test_id"]
+    ab_test_id = deployment.state.ab_test_id
     variants = {v["name"]: v for v in deployment.aws.agentcore.tests[ab_test_id]["variants"]}
     assert variants["C"]["weight"] == 90
     assert variants["T1"]["weight"] == 10
@@ -370,7 +372,7 @@ def test_observe_rolls_back_when_existing_gateway_target_mismatches(deployment):
     with pytest.raises(GatewayTargetMismatchError, match="does not match runtime/endpoint"):
         deployment.observe_candidate(IMAGE, 60)
 
-    assert deployment.state["finished"] == "rolled_back"
+    assert deployment.state.finished == "rolled_back"
 
 
 # --- Recovery: rollback after failures and cancellation ---
@@ -384,7 +386,7 @@ def test_run_reraises_original_error_when_rollback_also_fails(deployment):
         deployment.run(IMAGE, 60)
 
     # Left unfinished so the always() cleanup step retries the rollback.
-    assert "finished" not in deployment.state
+    assert deployment.state.finished is None
 
 
 def test_run_rolls_back_when_workflow_is_cancelled(deployment):
@@ -393,9 +395,9 @@ def test_run_rolls_back_when_workflow_is_cancelled(deployment):
     with pytest.raises(WorkflowCancelledError):
         deployment.run(IMAGE, 60)
 
-    assert deployment.state["finished"] == "rolled_back"
+    assert deployment.state.finished == "rolled_back"
     assert deployment.aws.agentcore_control.endpoints == {"control": "1", "treatment": "1"}
-    ab_test_id = deployment.state["ab_test_id"]
+    ab_test_id = deployment.state.ab_test_id
     assert deployment.aws.agentcore.tests[ab_test_id]["executionStatus"] == "STOPPED"
 
 
@@ -413,7 +415,7 @@ def test_promote_restores_baseline_when_control_update_response_is_lost(deployme
         deployment.run(IMAGE, 60)
 
     assert deployment.aws.agentcore_control.endpoints == {"control": "1", "treatment": "1"}
-    ab_test_id = deployment.state["ab_test_id"]
+    ab_test_id = deployment.state.ab_test_id
     assert deployment.aws.agentcore.tests[ab_test_id]["executionStatus"] == "STOPPED"
 
 
@@ -433,7 +435,7 @@ def test_promote_restores_baseline_when_control_update_fails(deployment):
 
     assert deployment.aws.agentcore_control.endpoints == {"control": "1", "treatment": "1"}
     assert deployment.aws.agentcore_control.statuses["control"] == "READY"
-    ab_test_id = deployment.state["ab_test_id"]
+    ab_test_id = deployment.state.ab_test_id
     assert deployment.aws.agentcore.tests[ab_test_id]["executionStatus"] == "STOPPED"
 
 
@@ -442,7 +444,7 @@ def test_rollback_is_a_no_op_after_promotion(deployment):
 
     deployment.rollback()
 
-    assert deployment.state["finished"] == "promoted"
+    assert deployment.state.finished == "promoted"
     assert deployment.aws.agentcore_control.endpoints == {"control": "2", "treatment": "2"}
 
 
@@ -453,8 +455,8 @@ def test_promote_deletes_ephemeral_evaluation_configs(deployment):
     deployment.run(IMAGE, 60)
 
     assert deployment.aws.agentcore_control.ephemeral_configs == {}
-    assert deployment.state["ephemeral_control_config_id"] is None
-    assert deployment.state["ephemeral_treatment_config_id"] is None
+    assert deployment.state.ephemeral_control_config_id is None
+    assert deployment.state.ephemeral_treatment_config_id is None
 
 
 def test_rollback_deletes_ephemeral_evaluation_configs(deployment):
@@ -464,8 +466,8 @@ def test_rollback_deletes_ephemeral_evaluation_configs(deployment):
         deployment.run(IMAGE, 60)
 
     assert deployment.aws.agentcore_control.ephemeral_configs == {}
-    assert deployment.state["ephemeral_control_config_id"] is None
-    assert deployment.state["ephemeral_treatment_config_id"] is None
+    assert deployment.state.ephemeral_control_config_id is None
+    assert deployment.state.ephemeral_treatment_config_id is None
 
 
 @pytest.mark.parametrize(
@@ -486,16 +488,16 @@ def test_finishing_tolerates_ab_test_already_stopped(deployment, finish, outcome
 
     getattr(deployment, finish)()
 
-    assert deployment.state["finished"] == outcome
+    assert deployment.state.finished == outcome
 
 
 def test_promote_tolerates_ab_test_already_deleted(deployment):
     deployment.observe_candidate(IMAGE, 60)
-    del deployment.aws.agentcore.tests[deployment.state["ab_test_id"]]
+    del deployment.aws.agentcore.tests[deployment.state.ab_test_id]
 
     deployment.promote_candidate()
 
-    assert deployment.state["finished"] == "promoted"
+    assert deployment.state.finished == "promoted"
 
 
 def test_promote_continues_when_aws_fails_to_delete_evaluation_configs(deployment):
@@ -508,9 +510,9 @@ def test_promote_continues_when_aws_fails_to_delete_evaluation_configs(deploymen
 
     deployment.promote_candidate()
 
-    assert deployment.state["finished"] == "promoted"
-    assert deployment.state["ephemeral_control_config_id"] is None
-    assert deployment.state["ephemeral_treatment_config_id"] is None
+    assert deployment.state.finished == "promoted"
+    assert deployment.state.ephemeral_control_config_id is None
+    assert deployment.state.ephemeral_treatment_config_id is None
 
 
 def test_promote_surfaces_non_aws_errors_from_evaluation_config_cleanup(deployment):

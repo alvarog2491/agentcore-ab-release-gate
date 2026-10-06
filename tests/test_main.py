@@ -155,7 +155,7 @@ def test_observe_subcommand_leaves_candidate_ready_to_promote(deployment, run_cl
 
     state = json.loads(deployment.path.read_text())
     assert state["ready_to_promote"] is True
-    assert "finished" not in state
+    assert state["finished"] is None
     assert deployment.aws.agentcore.tests[state["ab_test_id"]]["executionStatus"] == "RUNNING"
 
 

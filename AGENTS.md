@@ -53,6 +53,7 @@ This is a composite GitHub Action that evaluates a new Amazon Bedrock AgentCore 
 
 **`src/agentcore_release_gate/` package**:
 - `deployment.py` — `Deployment` class orchestrates the full lifecycle: baseline capture, treatment endpoint setup, evaluation config cloning, A/B test creation, observation loop, result collection, and promotion/rollback. Every mutable state change is checkpointed to a JSON recovery journal (`state.json`) before the next AWS API call so failures are recoverable.
+- `state.py` — `DeploymentState`, the frozen dataclass behind the recovery journal (`state.json`), plus `load_state`/`save_state` (atomic write). `Deployment._checkpoint` updates it with `dataclasses.replace`, so an unknown field fails immediately instead of being persisted.
 - `evaluation.py` — polls `GetABTest` until all configured evaluators have scored results, enforces quality gates (minimum score + no regression + optional statistical significance). Parses each evaluator's metrics through the `schemas.EvaluatorMetric`/`VariantMetric` Pydantic models.
 - `aws_client.py` — thin wrapper over `boto3` for AgentCore Control, AgentCore (data-plane), and ECR API calls, plus ECR image URI parsing. Client attributes are typed `Any` deliberately (see the comment in `__init__`) so this module's `JsonObject`-based contract stays uniform; `boto3-stubs` is still installed for editor/mypy completion.
 - `report.py` — builds and publishes the optional pull-request comment.
@@ -75,7 +76,7 @@ This is a composite GitHub Action that evaluates a new Amazon Bedrock AgentCore 
 9. Enforce gates — promote on pass, rollback on failure.
 10. Cleanup: stop A/B test, delete ephemeral evaluation configs.
 
-**Recovery journal** (`state.json`): Records `baseline`, `version`, `ab_test_id`, `ephemeral_*_config_id`, `promoting`, `finished`. The `rollback` subcommand reads this file and is safe to call repeatedly (idempotent via `finished` flag).
+**Recovery journal** (`state.json`): A serialized `DeploymentState` recording `baseline`, `control_endpoint_name`, `version`, `ab_test_id`, `ephemeral_*_config_id`, `promoting`, `finished`, and more. `control_endpoint_name` is journaled because the `promote`/`rollback` steps run without the action's inputs. The `rollback` subcommand reads this file and is safe to call repeatedly (idempotent via `finished` flag).
 
 **Step modes**: `auto` runs observe+promote in one job; `observe`/`promote`/`rollback` split across jobs using a GitHub Actions artifact to pass `state.json` between jobs.
 

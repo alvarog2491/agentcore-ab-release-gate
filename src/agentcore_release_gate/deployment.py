@@ -1,7 +1,7 @@
 """Orchestrate candidate deployment, observation, promotion, and recovery."""
 
-import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,28 +23,11 @@ from agentcore_release_gate.exceptions import (
     CandidateNotReadyError,
     ConfigurationError,
     GatewayTargetMismatchError,
-    StateJournalError,
 )
+from agentcore_release_gate.state import load_state, save_state
 from agentcore_release_gate.types import JsonObject, QualityGates
 from agentcore_release_gate.utils import wait_for
 from agentcore_release_gate.workflow_logging import log_event
-
-
-def load_state(path: Path) -> JsonObject:
-    """Read the recovery journal, or return an empty state when none exists yet.
-
-    Raises:
-        StateJournalError: If the journal exists but is not a JSON object.
-    """
-    if not path.exists():
-        return {}
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as error:
-        raise StateJournalError(f"Recovery journal {path} is not valid JSON") from error
-    if not isinstance(state, dict):
-        raise StateJournalError(f"Recovery journal {path} must contain a JSON object")
-    return state
 
 
 class Deployment:
@@ -87,33 +70,35 @@ class Deployment:
             evaluation_timeout: Maximum time to wait for evaluator results.
             scoring_lag_seconds: Required quiet period after scores stop arriving.
         """
+        self.path = Path(state_file)
+        self.state = load_state(self.path)
         self.quality_gates: QualityGates = quality_gates or {}
         self.require_significance = require_significance
-        self.control_endpoint_name = control_endpoint_name
+        # The promote/rollback steps run without the action's inputs, so a journal
+        # written by the observe step is authoritative for the control endpoint.
+        self.control_endpoint_name = self.state.control_endpoint_name or control_endpoint_name
         self.evaluation_config_template = evaluation_config_template
         self.ab_test_role_arn = ab_test_role_arn
         self.control_weight = control_weight
         self.treatment_weight = treatment_weight
         self.evaluation_timeout = evaluation_timeout
         self.scoring_lag_seconds = scoring_lag_seconds
-        self.path = Path(state_file)
-        self.state = load_state(self.path)
         self.aws = aws
 
     def _checkpoint(self, **changes: Any) -> None:
         """Merge changes into the in-memory state and flush to the JSON recovery journal.
 
-        Writes to a sibling .tmp file first, then renames it over the journal so a
-        mid-write crash never leaves a partial file. The always() cleanup step reads
-        this file to restore the baseline when the deployment fails or is cancelled.
+        The always() cleanup step reads this file to restore the baseline when the
+        deployment fails or is cancelled.
 
         Args:
-            **changes: Key-value pairs to merge into the current state.
+            **changes: DeploymentState fields to update.
+
+        Raises:
+            TypeError: If a change names a field DeploymentState does not have.
         """
-        updated_state = {**self.state, **changes}
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(updated_state), encoding="utf-8")
-        temporary.replace(self.path)
+        updated_state = replace(self.state, **changes)
+        save_state(self.path, updated_state)
         self.state = updated_state
 
     def _point(self, name: str, version: str) -> None:
@@ -129,17 +114,18 @@ class Deployment:
             (
                 test
                 for test in self.aws.list_ab_tests()
-                if test["gatewayArn"] == self.state["gateway_arn"]
+                if test["gatewayArn"] == self.state.gateway_arn
                 and test["executionStatus"] in ("RUNNING", "PAUSED")
             ),
             None,
         )
 
-    def _prepare(self) -> JsonObject:
+    def _prepare(self) -> tuple[JsonObject, str]:
         """Capture the baseline and ensure compatible treatment targets exist.
 
         Returns:
-            The baseline runtime configuration used to create the candidate.
+            The baseline runtime configuration used to create the candidate, and the
+            ARN of the Gateway that will run the A/B test.
 
         Raises:
             ABTestAlreadyActiveError: If another A/B test is active on the gateway.
@@ -154,21 +140,22 @@ class Deployment:
             baseline=baseline,
             runtime_arn=config["agentRuntimeArn"],
             gateway_arn=gateway["gatewayArn"],
+            control_endpoint_name=self.control_endpoint_name,
         )
         if self._active_ab_test() is not None:
             raise ABTestAlreadyActiveError(
                 "An AgentCore A/B test is still active on this Gateway; recover it first"
             )
-        self._ensure_targets()
+        self._ensure_targets(baseline, config["agentRuntimeArn"])
         log_event(
             "deployment-prepared",
             baseline=baseline,
             runtime=self.aws.runtime_id,
             gateway=self.aws.gateway_id,
         )
-        return config
+        return config, gateway["gatewayArn"]
 
-    def _ensure_targets(self) -> None:
+    def _ensure_targets(self, baseline: str, runtime_arn: str) -> None:
         """Create missing treatment resources and validate existing targets.
 
         Raises:
@@ -182,9 +169,9 @@ class Deployment:
             log_event(
                 "treatment-endpoint-creating",
                 endpoint="treatment",
-                version=self.state["baseline"],
+                version=baseline,
             )
-            self.aws.create_endpoint("treatment", self.state["baseline"])
+            self.aws.create_endpoint("treatment", baseline)
         wait_for(lambda: self.aws.get_endpoint("treatment"), "READY")
         log_event("treatment-endpoint-ready", endpoint="treatment")
 
@@ -193,7 +180,7 @@ class Deployment:
             desired = {
                 "http": {
                     "agentcoreRuntime": {
-                        "arn": self.state["runtime_arn"],
+                        "arn": runtime_arn,
                         "qualifier": name,
                     }
                 }
@@ -285,27 +272,31 @@ class Deployment:
         log_event("evaluation-config-ready", variant=variant_label, evaluationConfigId=config_id)
         return config_id, config_arn
 
-    def _start_ab_test(self) -> None:
-        """Create and start the native A/B test that splits and scores traffic."""
+    def _start_ab_test(self, gateway_arn: str) -> str:
+        """Create and start the native A/B test that splits and scores traffic.
+
+        Returns:
+            The ID of the running A/B test.
+        """
         log_event(
             "evaluation-config-template-loading",
             evaluationConfigId=self.evaluation_config_template,
         )
         template = self.aws.get_evaluation_config(self.evaluation_config_template)
-        control_id, control_arn = self._create_and_activate_eval_config(
+        _, control_arn = self._create_and_activate_eval_config(
             template, self.control_endpoint_name, "control", "c"
         )
-        treatment_id, treatment_arn = self._create_and_activate_eval_config(
+        _, treatment_arn = self._create_and_activate_eval_config(
             template, "treatment", "treatment", "t"
         )
         log_event(
             "ab-test-creating",
             controlWeight=self.control_weight,
             treatmentWeight=self.treatment_weight,
-            gatewayArn=self.state["gateway_arn"],
+            gatewayArn=gateway_arn,
         )
         ab_test_id = self.aws.create_ab_test(
-            gateway_arn=self.state["gateway_arn"],
+            gateway_arn=gateway_arn,
             role_arn=self.ab_test_role_arn,
             # Variant names are fixed by the service to "C" (control) and "T1" (treatment);
             # the Gateway target each variant serves is named separately, in `target.name`.
@@ -326,11 +317,11 @@ class Deployment:
                 "perVariantOnlineEvaluationConfig": [
                     {
                         "name": "C",
-                        "onlineEvaluationConfigArn": self.state["control_evaluation_config_arn"],
+                        "onlineEvaluationConfigArn": control_arn,
                     },
                     {
                         "name": "T1",
-                        "onlineEvaluationConfigArn": self.state["treatment_evaluation_config_arn"],
+                        "onlineEvaluationConfigArn": treatment_arn,
                     },
                 ]
             },
@@ -344,11 +335,12 @@ class Deployment:
             execution_status="RUNNING",
         )
         log_event("ab-test-running", abTestId=ab_test_id)
+        return ab_test_id
 
     def _delete_ephemeral_configs(self) -> None:
         """Delete both ephemeral evaluation configs (control and treatment) created for this run."""
         for key in ("ephemeral_control_config_id", "ephemeral_treatment_config_id"):
-            config_id = self.state.get(key)
+            config_id = getattr(self.state, key)
             if not config_id:
                 continue
             try:
@@ -371,7 +363,7 @@ class Deployment:
         review. _active_ab_test() only guards against RUNNING/PAUSED tests, so
         a stopped-but-undeleted test never blocks the next run.
         """
-        ab_test_id = self.state.get("ab_test_id")
+        ab_test_id = self.state.ab_test_id
         if not ab_test_id:
             return
         try:
@@ -408,14 +400,13 @@ class Deployment:
         log_event("treatment-endpoint-serving", endpoint="treatment", version=version)
         return version
 
-    def _observe(self, seconds: int) -> None:
+    def _observe(self, ab_test_id: str, seconds: int) -> None:
         """Wait while real or manually generated traffic accrues.
 
         Raises:
             ABTestInterruptedError: If the AB test leaves RUNNING state before the window
                 elapses.
         """
-        ab_test_id = self.state["ab_test_id"]
         log_event(
             "listening-for-connections",
             abTestId=ab_test_id,
@@ -449,17 +440,19 @@ class Deployment:
 
         Safe to call repeatedly: a completed recovery journal is left unchanged.
         """
-        if not self.state or self.state.get("finished"):
+        baseline = self.state.baseline
+        # Nothing changed before the baseline was captured, so there is nothing to undo.
+        if baseline is None or self.state.finished:
             return
-        if self.state.get("promoting"):
-            self._point(self.control_endpoint_name, self.state["baseline"])
-        if self.state.get("version"):
+        if self.state.promoting:
+            self._point(self.control_endpoint_name, baseline)
+        if self.state.version:
             # Leaves no endpoint pointing at a candidate that failed or was cancelled.
-            self._point("treatment", self.state["baseline"])
+            self._point("treatment", baseline)
         self._stop_ab_test()
         self._delete_ephemeral_configs()
         self._checkpoint(finished="rolled_back")
-        print("Rolled back: control retains version " + self.state["baseline"], flush=True)
+        print("Rolled back: control retains version " + baseline, flush=True)
 
     def _try_rollback(self) -> None:
         """Roll back without ever raising, so a rollback failure can't hide the original error.
@@ -487,18 +480,18 @@ class Deployment:
         image = self.aws.resolve_image(image)
         log_event("candidate-image-resolved", image=image, observationSeconds=seconds)
         try:
-            config = self._prepare()
+            config, gateway_arn = self._prepare()
             self._checkpoint(
                 quality_gates=self.quality_gates,
                 require_significance=self.require_significance,
             )
             self._deploy_candidate(config, image)
-            self._start_ab_test()
-            self._observe(seconds)
-            log_event("evaluation-results-waiting", abTestId=self.state["ab_test_id"])
+            ab_test_id = self._start_ab_test(gateway_arn)
+            self._observe(ab_test_id, seconds)
+            log_event("evaluation-results-waiting", abTestId=ab_test_id)
             variant_results = wait_for_ab_test_results(
                 self.aws.agentcore,
-                self.state["ab_test_id"],
+                ab_test_id,
                 self.quality_gates,
                 self.evaluation_timeout,
                 scoring_lag_seconds=self.scoring_lag_seconds,
@@ -523,9 +516,9 @@ class Deployment:
             CandidateNotReadyError: If no candidate is ready for promotion.
             BaseException: Re-raises promotion failures after rollback.
         """
-        if not self.state.get("ready_to_promote"):
+        version = self.state.version
+        if not self.state.ready_to_promote or version is None:
             raise CandidateNotReadyError("No candidate is ready to promote; run observation first")
-        version = self.state["version"]
         try:
             log_event("candidate-promotion-starting", version=version)
             self._checkpoint(promoting=True)

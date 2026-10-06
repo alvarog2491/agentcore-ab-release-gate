@@ -12,6 +12,7 @@ from agentcore_release_gate.constants import (
 )
 from agentcore_release_gate.evaluation import GateFailureReason, gate_failure_reason
 from agentcore_release_gate.exceptions import ConfigurationError, UnexpectedGitHubResponseError
+from agentcore_release_gate.state import DeploymentState
 from agentcore_release_gate.types import GitHubResponse, JsonObject
 
 COMMENT_MARKER = "<!-- agentcore-ab-release-gate-report -->"
@@ -24,7 +25,7 @@ FAILURE_LABELS: dict[GateFailureReason, str] = {
 }
 
 
-def build_report(state: JsonObject, outcome: str, run_url: str = "") -> str:
+def build_report(state: DeploymentState, outcome: str, run_url: str = "") -> str:
     """Build a stable Markdown summary from the recovery journal.
 
     Args:
@@ -35,7 +36,7 @@ def build_report(state: JsonObject, outcome: str, run_url: str = "") -> str:
     Returns:
         A Markdown report suitable for a pull-request comment.
     """
-    finished = state.get("finished")
+    finished = state.finished
     if finished == "promoted" and outcome == "success":
         heading, decision = "✅ AgentCore A/B deployment promoted", "Promoted"
     elif finished == "rolled_back":
@@ -44,14 +45,14 @@ def build_report(state: JsonObject, outcome: str, run_url: str = "") -> str:
         heading, decision = "❌ AgentCore A/B deployment failed", "Failed"
 
     lines = [COMMENT_MARKER, f"## {heading}", "", f"**Decision:** {decision}"]
-    if state.get("version"):
-        lines.append(f"**Candidate version:** `{state['version']}`")
-    if state.get("image"):
-        lines.append(f"**Image:** `{state['image']}`")
+    if state.version:
+        lines.append(f"**Candidate version:** `{state.version}`")
+    if state.image:
+        lines.append(f"**Image:** `{state.image}`")
 
-    gates = state.get("quality_gates", {})
-    results = state.get("variant_results", {})
-    require_significance = state.get("require_significance", True)
+    gates = state.quality_gates
+    results = state.variant_results
+    require_significance = state.require_significance
     if gates:
         lines.extend(
             [
@@ -86,7 +87,7 @@ def build_report(state: JsonObject, outcome: str, run_url: str = "") -> str:
                 f"| `{evaluator}` | {mean:g} | {minimum:g} | {rendered_significant} | "
                 f"{rendered_change} | {rendered_p_value} | {samples} | {result} |"
             )
-    elif not state:
+    elif state == DeploymentState():
         lines.extend(
             [
                 "",

@@ -9,10 +9,11 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from agentcore_release_gate.aws_client import AwsClient
-from agentcore_release_gate.deployment import Deployment, load_state
+from agentcore_release_gate.deployment import Deployment
 from agentcore_release_gate.exceptions import ConfigurationError, WorkflowCancelledError
 from agentcore_release_gate.report import build_report, publish_report
 from agentcore_release_gate.schemas import ActionConfig
+from agentcore_release_gate.state import DeploymentState, load_state
 from agentcore_release_gate.workflow_logging import get_workflow_logger
 
 logger = get_workflow_logger()
@@ -41,13 +42,16 @@ def _write_step_outputs(outputs: dict[str, str]) -> None:
 
 def _write_variant_results(deployment: Deployment) -> None:
     """Expose the evaluated A/B results as the ``variant-results`` step output."""
-    _write_step_outputs({"variant-results": json.dumps(deployment.state["variant_results"])})
+    _write_step_outputs({"variant-results": json.dumps(deployment.state.variant_results)})
 
 
 def _write_promoted_candidate(deployment: Deployment) -> None:
     """Expose the promoted runtime version and image as step outputs."""
     _write_step_outputs(
-        {"runtime-version": deployment.state["version"], "image-uri": deployment.state["image"]}
+        {
+            "runtime-version": deployment.state.version or "",
+            "image-uri": deployment.state.image or "",
+        }
     )
 
 
@@ -76,7 +80,7 @@ def cmd_report() -> None:
     if not pull_request:
         return
     state_path = os.environ.get("STATE_FILE", "")
-    state = load_state(Path(state_path)) if state_path else {}
+    state = load_state(Path(state_path)) if state_path else DeploymentState()
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
     run_url = (
         f"{server}/{require_env('GITHUB_REPOSITORY')}/actions/runs/{require_env('GITHUB_RUN_ID')}"

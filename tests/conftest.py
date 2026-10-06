@@ -7,6 +7,7 @@ from aws_mocks import MockAgentCore, MockAgentCoreControl
 
 from agentcore_release_gate import aws_client as ab_aws
 from agentcore_release_gate import deployment as ab
+from agentcore_release_gate.state import DeploymentState
 
 
 class MockClock:
@@ -53,7 +54,7 @@ def deployment(tmp_path, aws, clock, silence_print):
     """A Deployment with a fresh state journal, backed by the mock AWS client."""
     deployment = ab.Deployment.__new__(ab.Deployment)
     deployment.path = tmp_path / "state.json"
-    deployment.state = {}
+    deployment.state = DeploymentState()
     deployment.quality_gates = {"Builtin.Helpfulness": 0.7, "Builtin.Correctness": 0.7}
     deployment.require_significance = True
     deployment.control_endpoint_name = "control"

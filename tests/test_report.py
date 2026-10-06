@@ -12,6 +12,7 @@ from agentcore_release_gate.exceptions import (
     UnexpectedGitHubResponseError,
 )
 from agentcore_release_gate.report import COMMENT_MARKER, build_report, publish_report
+from agentcore_release_gate.state import DeploymentState
 
 
 @pytest.fixture
@@ -67,7 +68,7 @@ def test_build_report_includes_decision_scores_and_thresholds():
         },
     }
 
-    report = build_report(state, "success")
+    report = build_report(DeploymentState(**state), "success")
 
     assert COMMENT_MARKER in report
     assert "Promoted" in report
@@ -80,7 +81,7 @@ def test_build_report_includes_decision_scores_and_thresholds():
 
 
 def test_build_report_explains_failure_without_deployment_state():
-    report = build_report({}, "failure")
+    report = build_report(DeploymentState(), "failure")
 
     assert "Failed" in report
     assert "No deployment state was recorded" in report
@@ -123,7 +124,7 @@ def test_build_report_shows_rollback_and_per_evaluator_failure_reasons():
         },
     }
 
-    report = build_report(state, "failure")
+    report = build_report(DeploymentState(**state), "failure")
 
     assert "Rolled back" in report
     assert "❌ AgentCore A/B deployment rejected" in report
@@ -134,7 +135,9 @@ def test_build_report_shows_rollback_and_per_evaluator_failure_reasons():
 
 
 def test_build_report_links_to_workflow_run():
-    report = build_report({"finished": "rolled_back"}, "failure", "https://example.com/run/1")
+    report = build_report(
+        DeploymentState(finished="rolled_back"), "failure", "https://example.com/run/1"
+    )
 
     assert "[View workflow run](https://example.com/run/1)" in report
 
@@ -218,7 +221,7 @@ def _single_gate_state(require_significance=None, **variant_overrides):
     }
     if require_significance is not None:
         state["require_significance"] = require_significance
-    return state
+    return DeploymentState(**state)
 
 
 def _result_cell(report):
@@ -291,4 +294,6 @@ def test_build_report_result_matches_enforce_quality_gates(
     except QualityGateFailedError:
         gate_passed = False
 
-    assert _result_cell(build_report(state, "success")).startswith("✅") is gate_passed
+    report = build_report(DeploymentState(**state), "success")
+
+    assert _result_cell(report).startswith("✅") is gate_passed
