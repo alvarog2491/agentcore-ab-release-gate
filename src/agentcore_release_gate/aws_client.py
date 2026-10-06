@@ -98,9 +98,7 @@ class AwsClient:
         # the rest of the codebase deliberately treats AWS payloads as JsonObject (see
         # schemas.py's docstring for why). boto3-stubs is still installed for editor
         # and mypy completion on `session.client(...)` itself, and for the strongly
-        self.agentcore_control: Any = session.client(
-            "bedrock-agentcore-control", config=config
-        )
+        self.agentcore_control: Any = session.client("bedrock-agentcore-control", config=config)
         self.agentcore: Any = session.client("bedrock-agentcore", config=config)
         self._ecr: Any = session.client("ecr")
         self.region = region
@@ -174,17 +172,13 @@ class AwsClient:
         allowed = self.agentcore_control.meta.service_model.operation_model(
             "UpdateAgentRuntime"
         ).input_shape.members
-        update = {
-            key: value for key, value in baseline_config.items() if key in allowed
-        }
+        update = {key: value for key, value in baseline_config.items() if key in allowed}
         update.update(
             agentRuntimeId=self.runtime_id,
             clientToken=str(uuid.uuid4()),
             agentRuntimeArtifact={"containerConfiguration": {"containerUri": image}},
         )
-        return self.agentcore_control.update_agent_runtime(**update)[
-            "agentRuntimeVersion"
-        ]
+        return self.agentcore_control.update_agent_runtime(**update)["agentRuntimeVersion"]
 
     # ── Gateway ───────────────────────────────────────────────────────────────
 
@@ -204,9 +198,9 @@ class AwsClient:
         """
         return {
             target["name"]: target
-            for page in self.agentcore_control.get_paginator(
-                "list_gateway_targets"
-            ).paginate(gatewayIdentifier=self.gateway_id)
+            for page in self.agentcore_control.get_paginator("list_gateway_targets").paginate(
+                gatewayIdentifier=self.gateway_id
+            )
             for target in page["items"]
         }
 
@@ -237,9 +231,7 @@ class AwsClient:
             gatewayIdentifier=self.gateway_id,
             name=name,
             targetConfiguration=target_config,
-            credentialProviderConfigurations=[
-                {"credentialProviderType": "GATEWAY_IAM_ROLE"}
-            ],
+            credentialProviderConfigurations=[{"credentialProviderType": "GATEWAY_IAM_ROLE"}],
         )
 
     # ── Online evaluations ────────────────────────────────────────────────────
@@ -272,9 +264,7 @@ class AwsClient:
         Returns:
             Tuple of (onlineEvaluationConfigId, onlineEvaluationConfigArn).
         """
-        kwargs: JsonObject = {
-            k: v for k, v in source.items() if k in _EVAL_CONFIG_COPY_FIELDS
-        }
+        kwargs: JsonObject = {k: v for k, v in source.items() if k in _EVAL_CONFIG_COPY_FIELDS}
         rule: JsonObject = {**kwargs.get("rule", {})}
         rule["samplingConfig"] = {
             **rule.get("samplingConfig", {}),
@@ -389,9 +379,7 @@ class AwsClient:
         """
         parsed = _parse_image(image)
         if parsed["region"] != self.region:
-            raise ImageRegionMismatchError(
-                "ECR image and AgentCore must use the same AWS Region"
-            )
+            raise ImageRegionMismatchError("ECR image and AgentCore must use the same AWS Region")
         if parsed["digest"]:
             return image
         result = self._ecr.describe_images(
