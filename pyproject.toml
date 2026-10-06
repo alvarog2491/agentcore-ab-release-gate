@@ -45,6 +45,10 @@ disallow_untyped_defs = true
 module = "tests.*"
 disallow_untyped_defs = false
 
+[[tool.mypy.overrides]]
+module = "agentcore_release_gate.aws_client"
+warn_return_any = false
+
 [tool.pytest.ini_options]
 pythonpath = [".", "src", "tests"]
 

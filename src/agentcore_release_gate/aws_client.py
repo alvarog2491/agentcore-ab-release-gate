@@ -15,7 +15,10 @@ from agentcore_release_gate.constants import (
     AWS_READ_TIMEOUT_SECONDS,
     SHA256_HEX_LENGTH,
 )
-from agentcore_release_gate.exceptions import ImageRegionMismatchError, InvalidImageUriError
+from agentcore_release_gate.exceptions import (
+    ImageRegionMismatchError,
+    InvalidImageUriError,
+)
 from agentcore_release_gate.types import JsonObject
 
 ECR_IMAGE_PATTERN = re.compile(
@@ -95,8 +98,9 @@ class AwsClient:
         # the rest of the codebase deliberately treats AWS payloads as JsonObject (see
         # schemas.py's docstring for why). boto3-stubs is still installed for editor
         # and mypy completion on `session.client(...)` itself, and for the strongly
-        # typed AB-test result parsing in evaluation.py.
-        self.agentcore_control: Any = session.client("bedrock-agentcore-control", config=config)
+        self.agentcore_control: Any = session.client(
+            "bedrock-agentcore-control", config=config
+        )
         self.agentcore: Any = session.client("bedrock-agentcore", config=config)
         self._ecr: Any = session.client("ecr")
         self.region = region
@@ -114,11 +118,8 @@ class AwsClient:
         Returns:
             AgentCore endpoint response payload.
         """
-        return cast(
-            JsonObject,
-            self.agentcore_control.get_agent_runtime_endpoint(
-                agentRuntimeId=self.runtime_id, endpointName=name
-            ),
+        return self.agentcore_control.get_agent_runtime_endpoint(
+            agentRuntimeId=self.runtime_id, endpointName=name
         )
 
     def update_endpoint(self, name: str, version: str) -> None:
@@ -129,7 +130,9 @@ class AwsClient:
             version: Runtime version that should serve through the endpoint.
         """
         self.agentcore_control.update_agent_runtime_endpoint(
-            agentRuntimeId=self.runtime_id, endpointName=name, agentRuntimeVersion=version
+            agentRuntimeId=self.runtime_id,
+            endpointName=name,
+            agentRuntimeVersion=version,
         )
 
     def create_endpoint(self, name: str, version: str) -> None:
@@ -154,11 +157,8 @@ class AwsClient:
         Returns:
             AgentCore runtime response payload.
         """
-        return cast(
-            JsonObject,
-            self.agentcore_control.get_agent_runtime(
-                agentRuntimeId=self.runtime_id, agentRuntimeVersion=version
-            ),
+        return self.agentcore_control.get_agent_runtime(
+            agentRuntimeId=self.runtime_id, agentRuntimeVersion=version
         )
 
     def update_runtime(self, baseline_config: JsonObject, image: str) -> str:
@@ -174,15 +174,17 @@ class AwsClient:
         allowed = self.agentcore_control.meta.service_model.operation_model(
             "UpdateAgentRuntime"
         ).input_shape.members
-        update = {key: value for key, value in baseline_config.items() if key in allowed}
+        update = {
+            key: value for key, value in baseline_config.items() if key in allowed
+        }
         update.update(
             agentRuntimeId=self.runtime_id,
             clientToken=str(uuid.uuid4()),
             agentRuntimeArtifact={"containerConfiguration": {"containerUri": image}},
         )
-        return cast(
-            str, self.agentcore_control.update_agent_runtime(**update)["agentRuntimeVersion"]
-        )
+        return self.agentcore_control.update_agent_runtime(**update)[
+            "agentRuntimeVersion"
+        ]
 
     # ── Gateway ───────────────────────────────────────────────────────────────
 
@@ -192,9 +194,7 @@ class AwsClient:
         Returns:
             AgentCore Gateway response payload.
         """
-        return cast(
-            JsonObject, self.agentcore_control.get_gateway(gatewayIdentifier=self.gateway_id)
-        )
+        return self.agentcore_control.get_gateway(gatewayIdentifier=self.gateway_id)
 
     def list_gateway_targets(self) -> dict[str, JsonObject]:
         """Return all Gateway targets keyed by their stable names.
@@ -204,9 +204,9 @@ class AwsClient:
         """
         return {
             target["name"]: target
-            for page in self.agentcore_control.get_paginator("list_gateway_targets").paginate(
-                gatewayIdentifier=self.gateway_id
-            )
+            for page in self.agentcore_control.get_paginator(
+                "list_gateway_targets"
+            ).paginate(gatewayIdentifier=self.gateway_id)
             for target in page["items"]
         }
 
@@ -219,11 +219,8 @@ class AwsClient:
         Returns:
             AgentCore Gateway target response payload.
         """
-        return cast(
-            JsonObject,
-            self.agentcore_control.get_gateway_target(
-                gatewayIdentifier=self.gateway_id, targetId=target_id
-            ),
+        return self.agentcore_control.get_gateway_target(
+            gatewayIdentifier=self.gateway_id, targetId=target_id
         )
 
     def create_gateway_target(self, name: str, target_config: JsonObject) -> JsonObject:
@@ -236,14 +233,13 @@ class AwsClient:
         Returns:
             Created Gateway target response payload.
         """
-        return cast(
-            JsonObject,
-            self.agentcore_control.create_gateway_target(
-                gatewayIdentifier=self.gateway_id,
-                name=name,
-                targetConfiguration=target_config,
-                credentialProviderConfigurations=[{"credentialProviderType": "GATEWAY_IAM_ROLE"}],
-            ),
+        return self.agentcore_control.create_gateway_target(
+            gatewayIdentifier=self.gateway_id,
+            name=name,
+            targetConfiguration=target_config,
+            credentialProviderConfigurations=[
+                {"credentialProviderType": "GATEWAY_IAM_ROLE"}
+            ],
         )
 
     # ── Online evaluations ────────────────────────────────────────────────────
@@ -257,9 +253,8 @@ class AwsClient:
         Returns:
             AgentCore online-evaluation configuration response payload.
         """
-        return cast(
-            JsonObject,
-            self.agentcore_control.get_online_evaluation_config(onlineEvaluationConfigId=config_id),
+        return self.agentcore_control.get_online_evaluation_config(
+            onlineEvaluationConfigId=config_id
         )
 
     def create_evaluation_config_from(
@@ -277,9 +272,14 @@ class AwsClient:
         Returns:
             Tuple of (onlineEvaluationConfigId, onlineEvaluationConfigArn).
         """
-        kwargs: JsonObject = {k: v for k, v in source.items() if k in _EVAL_CONFIG_COPY_FIELDS}
+        kwargs: JsonObject = {
+            k: v for k, v in source.items() if k in _EVAL_CONFIG_COPY_FIELDS
+        }
         rule: JsonObject = {**kwargs.get("rule", {})}
-        rule["samplingConfig"] = {**rule.get("samplingConfig", {}), "samplingPercentage": 100}
+        rule["samplingConfig"] = {
+            **rule.get("samplingConfig", {}),
+            "samplingPercentage": 100,
+        }
         kwargs["rule"] = rule
         kwargs["onlineEvaluationConfigName"] = (
             source.get("onlineEvaluationConfigName", "eval")
@@ -289,7 +289,10 @@ class AwsClient:
         kwargs["clientToken"] = str(uuid.uuid4())
         kwargs["enableOnCreate"] = True
         response = self.agentcore_control.create_online_evaluation_config(**kwargs)
-        return response["onlineEvaluationConfigId"], response["onlineEvaluationConfigArn"]
+        return (
+            response["onlineEvaluationConfigId"],
+            response["onlineEvaluationConfigArn"],
+        )
 
     def delete_evaluation_config(self, config_id: str) -> None:
         """Delete an ephemeral online-evaluation configuration if it still exists.
@@ -348,7 +351,7 @@ class AwsClient:
             enableOnCreate=True,
             clientToken=str(uuid.uuid4()),
         )
-        return cast(str, response["abTestId"])
+        return response["abTestId"]
 
     def get_ab_test(self, ab_test_id: str) -> JsonObject:
         """Return the current state and results for an A/B test.
@@ -359,7 +362,7 @@ class AwsClient:
         Returns:
             AgentCore A/B test response payload.
         """
-        return cast(JsonObject, self.agentcore.get_ab_test(abTestId=ab_test_id))
+        return self.agentcore.get_ab_test(abTestId=ab_test_id)
 
     def stop_ab_test(self, ab_test_id: str) -> None:
         """Stop an A/B test, returning Gateway traffic to its control target.
@@ -386,7 +389,9 @@ class AwsClient:
         """
         parsed = _parse_image(image)
         if parsed["region"] != self.region:
-            raise ImageRegionMismatchError("ECR image and AgentCore must use the same AWS Region")
+            raise ImageRegionMismatchError(
+                "ECR image and AgentCore must use the same AWS Region"
+            )
         if parsed["digest"]:
             return image
         result = self._ecr.describe_images(
@@ -394,5 +399,5 @@ class AwsClient:
             repositoryName=parsed["repository"],
             imageIds=[{"imageTag": parsed["tag"]}],
         )
-        digest = cast(str, result["imageDetails"][0]["imageDigest"])
+        digest = result["imageDetails"][0]["imageDigest"]
         return image.rsplit(":", 1)[0] + "@" + digest
