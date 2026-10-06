@@ -93,11 +93,8 @@ class AwsClient:
             retries={"mode": "standard", "total_max_attempts": AWS_MAX_ATTEMPTS},
         )
         session = boto3.Session(region_name=region)
-        # Typed as Any: boto3-stubs' precise per-operation TypedDicts would force every
-        # call site in this module onto a rigid, request/response-specific shape, when
-        # the rest of the codebase deliberately treats AWS payloads as JsonObject (see
-        # schemas.py's docstring for why). boto3-stubs is still installed for editor
-        # and mypy completion on `session.client(...)` itself, and for the strongly
+        # Typed as Any on purpose: the codebase treats AWS payloads as JsonObject (see
+        # schemas.py's docstring), not as boto3-stubs' per-operation TypedDicts.
         self.agentcore_control: Any = session.client("bedrock-agentcore-control", config=config)
         self.agentcore: Any = session.client("bedrock-agentcore", config=config)
         self._ecr: Any = session.client("ecr")

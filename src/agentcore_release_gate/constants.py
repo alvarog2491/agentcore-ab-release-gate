@@ -14,7 +14,6 @@ AWS_MAX_ATTEMPTS = 3
 DEFAULT_AWS_WAIT_TIMEOUT_SECONDS = 15 * 60
 AWS_POLL_INTERVAL_SECONDS = 10
 
-# Evaluation results are checked more often than long observation status updates.
 EVALUATION_POLL_INTERVAL_SECONDS = 30
 OBSERVATION_LOG_INTERVAL_SECONDS = 30
 # Fail fast if the online evaluator scores no sessions within this window.
@@ -25,13 +24,10 @@ OBSERVATION_LOG_INTERVAL_SECONDS = 30
 NO_SESSIONS_TIMEOUT_SECONDS = 20 * 60
 MINIMUM_OBSERVATION_SECONDS = 60
 MINIMUM_RESULT_SAMPLE_SIZE = 1
-# After all evaluators have at least one result, continue polling until the total
-# scored-sample count has been stable for this many seconds before evaluating gates.
-# Scoring results arrive with a delay after the observation window closes, so waiting
-# for a stable count ensures quality-gate decisions are made on the most complete data.
+# Scores keep arriving after the observation window closes, so gates wait until the
+# scored-sample count has been stable this long.
 SCORING_LAG_SECONDS = 600
 
-# A/B traffic weights are integer percentages and both variants must receive traffic.
 MINIMUM_VARIANT_WEIGHT = 1
 MAXIMUM_VARIANT_WEIGHT = 99
 TOTAL_TRAFFIC_WEIGHT = 100
@@ -43,13 +39,10 @@ GITHUB_COMMENTS_PAGE_SIZE = 100
 GITHUB_REQUEST_TIMEOUT_SECONDS = 30
 GITHUB_API_VERSION = "2026-03-10"
 
-# Eight random hexadecimal characters keep generated A/B test names short and unique.
 AB_TEST_NAME_RANDOM_LENGTH = 8
 
-# ECR account IDs and SHA-256 digests have service-defined fixed lengths.
 AWS_ACCOUNT_ID_LENGTH = 12
 SHA256_HEX_LENGTH = 64
 
-# Custom AgentCore evaluator IDs use these service-defined component limits.
 MAX_EVALUATOR_NAME_PREFIX_LENGTH = 100
 EVALUATOR_ID_SUFFIX_LENGTH = 10

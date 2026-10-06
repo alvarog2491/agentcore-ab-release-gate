@@ -218,7 +218,6 @@ def test_promote_uses_journaled_control_endpoint_when_inputs_are_absent(deployme
     deployment.aws.agentcore_control.endpoints = {"prod": "1"}
     deployment.observe_candidate(IMAGE, 60)
 
-    # The split-mode promote job builds a Deployment without the action's inputs.
     Deployment(str(deployment.path), deployment.aws).promote_candidate()
 
     assert deployment.aws.agentcore_control.endpoints == {"prod": "2", "treatment": "2"}

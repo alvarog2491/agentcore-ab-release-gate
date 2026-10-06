@@ -447,7 +447,6 @@ class Deployment:
         if self.state.promoting:
             self._point(self.control_endpoint_name, baseline)
         if self.state.version:
-            # Leaves no endpoint pointing at a candidate that failed or was cancelled.
             self._point("treatment", baseline)
         self._stop_ab_test()
         self._delete_ephemeral_configs()

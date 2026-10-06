@@ -20,7 +20,6 @@ class DeploymentState:
     baseline: str | None = None
     runtime_arn: str | None = None
     gateway_arn: str | None = None
-    # Persisted because the promote/rollback steps run without the action's inputs.
     control_endpoint_name: str | None = None
     quality_gates: QualityGates = field(default_factory=dict)
     require_significance: bool = True
